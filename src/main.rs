@@ -37,7 +37,7 @@ enum Request {
 }
 
 #[derive(Serialize)]
-struct SuccessResponse<T: Serialize> {
+struct SuccessResponse<T> {
     id: u64,
     result: T,
 }
@@ -58,7 +58,7 @@ fn write_json_line<T: Serialize>(out: &mut impl Write, value: &T) -> io::Result<
 fn write_result<T: Serialize, E: ToString>(
     out: &mut impl Write,
     id: u64,
-    result: std::result::Result<T, E>,
+    result: Result<T, E>,
 ) -> io::Result<()> {
     match result {
         Ok(value) => write_json_line(out, &SuccessResponse { id, result: value }),
@@ -88,10 +88,16 @@ fn handle_request(
             write_result(out, id, patchbay.route_nodes(node_ids))?;
         }
         Request::ClearRoutes { id } => {
-            write_result(out, id, patchbay.clear_routes())?;
+            write_result(out, id, {
+                patchbay.clear_routes();
+                Ok::<(), String>(())
+            })?;
         }
         Request::Dispose { id } => {
-            write_result(out, id, patchbay.dispose())?;
+            write_result(out, id, {
+                patchbay.dispose();
+                Ok::<(), String>(())
+            })?;
             return Ok(false);
         }
     }

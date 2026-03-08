@@ -130,12 +130,12 @@ impl AudioSharePatchbay {
         self.state.route_nodes(node_ids)
     }
 
-    pub fn clear_routes(&mut self) -> Result<()> {
-        self.state.clear_routes()
+    pub fn clear_routes(&mut self) {
+        self.state.clear_routes();
     }
 
-    pub fn dispose(&mut self) -> Result<()> {
-        self.state.dispose()
+    pub fn dispose(&mut self) {
+        self.state.dispose();
     }
 }
 
@@ -418,7 +418,7 @@ impl PatchbayState {
 
     fn route_nodes(&mut self, node_ids: Vec<u32>) -> Result<VirtualSinkInfo> {
         let sink_info = self.ensure_virtual_sink()?;
-        self.clear_routes()?;
+        self.clear_routes();
 
         if node_ids.is_empty() {
             return Err(BackendError::Message(
@@ -506,25 +506,21 @@ impl PatchbayState {
         Ok(sink_info)
     }
 
-    fn clear_routes(&mut self) -> Result<()> {
+    fn clear_routes(&mut self) {
         let routes = std::mem::take(&mut self.routes);
 
         for route in routes {
             let _ = remove_link(&route.output_path, &route.input_path);
         }
-
-        Ok(())
     }
 
-    fn dispose(&mut self) -> Result<()> {
-        self.clear_routes()?;
+    fn dispose(&mut self) {
+        self.clear_routes();
 
         if let Some(module_id) = self.module_id.take() {
             let module_id_text = module_id.to_string();
             let _ = run_text("pactl", &["unload-module", module_id_text.as_str()]);
         }
-
-        Ok(())
     }
 
     fn virtual_sink_node_id(&self, snapshot: &PipeWireSnapshot) -> Option<u32> {
@@ -553,7 +549,7 @@ impl PatchbayState {
 
 impl Drop for PatchbayState {
     fn drop(&mut self) {
-        let _ = self.dispose();
+        self.dispose();
     }
 }
 

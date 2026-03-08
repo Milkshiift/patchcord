@@ -35,15 +35,7 @@ struct Logger {
 static LOGGER: OnceLock<Logger> = OnceLock::new();
 
 fn log_directory() -> PathBuf {
-    let mut dir = env::temp_dir();
-
-    if let Some(home) = env::var_os("HOME") {
-        dir = PathBuf::from(home).join(".local").join("state");
-    }
-
-    if let Some(state_home) = env::var_os("XDG_STATE_HOME") {
-        dir = PathBuf::from(state_home);
-    }
+    let dir = env::var_os("XDG_STATE_HOME").map_or_else(|| env::var_os("HOME").map_or_else(env::temp_dir, |home| PathBuf::from(home).join(".local").join("state")), PathBuf::from);
 
     dir.join("patchcord")
 }
