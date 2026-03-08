@@ -1,116 +1,24 @@
-use std::{
-	env,
-	fs::{self, File, OpenOptions},
-	io::Write,
-	path::PathBuf,
-	sync::{Mutex, OnceLock},
-};
-
-#[derive(Copy, Clone)]
-enum Level {
-	Error,
-	Warn,
-	Info,
-	Debug,
-	Trace,
-}
-
-impl Level {
-	const fn as_str(self) -> &'static str {
-		match self {
-			Self::Error => "ERROR",
-			Self::Warn => "WARN",
-			Self::Info => "INFO",
-			Self::Debug => "DEBUG",
-			Self::Trace => "TRACE",
-		}
-	}
-}
-
-struct Logger {
-	trace_enabled: bool,
-	file: Option<Mutex<File>>,
-}
-
-static LOGGER: OnceLock<Logger> = OnceLock::new();
-
-fn log_directory() -> PathBuf {
-	let dir = env::var_os("XDG_STATE_HOME").map_or_else(
-		|| env::var_os("HOME").map_or_else(env::temp_dir, |home| PathBuf::from(home).join(".local").join("state")),
-		PathBuf::from,
-	);
-
-	dir.join("patchcord")
-}
-
-fn get_logger() -> &'static Logger {
-	LOGGER.get_or_init(|| {
-		let trace_enabled = env::var_os("patchcord_ENABLE_LOG").is_some();
-
-		let file = if trace_enabled {
-			let dir = log_directory();
-			let _ = fs::create_dir_all(&dir);
-
-			OpenOptions::new()
-				.create(true)
-				.append(true)
-				.open(dir.join("patchcord.log"))
-				.ok()
-				.map(Mutex::new)
-		} else {
-			None
-		};
-
-		Logger { trace_enabled, file }
-	})
-}
-
-pub fn init_logging() {
-	let _ = get_logger();
-}
-
-const fn should_log(level: Level, logger: &Logger) -> bool {
-	match level {
-		Level::Error | Level::Warn | Level::Info => true,
-		Level::Debug | Level::Trace => logger.trace_enabled,
-	}
-}
-
-fn write_line(level: Level, message: &str) {
-	let logger = get_logger();
-
-	if !should_log(level, logger) {
-		return;
-	}
-
-	let line = format!("[{}] {}", level.as_str(), message);
-
-	eprintln!("{line}");
-
-	if let Some(file) = &logger.file
-		&& let Ok(mut file) = file.lock()
-	{
-		let _ = writeln!(file, "{line}");
-		let _ = file.flush();
-	}
-}
-
 pub fn error(message: &str) {
-	write_line(Level::Error, message);
+	eprintln!("[ERROR] {message}");
 }
 
 pub fn warn(message: &str) {
-	write_line(Level::Warn, message);
+	eprintln!("[WARN] {message}");
 }
 
 pub fn info(message: &str) {
-	write_line(Level::Info, message);
+	eprintln!("[INFO] {message}");
 }
 
 pub fn debug(message: &str) {
-	write_line(Level::Debug, message);
+	eprintln!("[DEBUG] {message}");
+	// if std::env::var_os("PATCHCORD_DEBUG").is_some() {
+	// 	eprintln!("[DEBUG] {message}");
+	// }
 }
 
 pub fn trace(message: &str) {
-	write_line(Level::Trace, message);
+	if std::env::var_os("PATCHCORD_TRACE").is_some() {
+		eprintln!("[TRACE] {message}");
+	}
 }

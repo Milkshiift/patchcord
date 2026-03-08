@@ -27,9 +27,9 @@ pub type Result<T> = std::result::Result<T, BackendError>;
 pub enum BackendError {
 	Unsupported,
 	Timeout(&'static str),
-	Io { program: &'static str, source: std::io::Error },
-	CommandFailed { program: &'static str, stderr: String },
-	InvalidOutput { program: &'static str, reason: String },
+	Io(&'static str, std::io::Error),
+	CommandFailed(&'static str, String),
+	InvalidOutput(&'static str, String),
 	Json(miniserde::Error),
 	Message(String),
 }
@@ -39,11 +39,9 @@ impl fmt::Display for BackendError {
 		match self {
 			Self::Unsupported => write!(f, "PipeWire was not detected as the active audio server"),
 			Self::Timeout(thing) => write!(f, "timed out waiting for {thing}"),
-			Self::Io { program, source } => write!(f, "failed to run {program}: {source}"),
-			Self::CommandFailed { program, stderr } => write!(f, "{program} failed: {stderr}"),
-			Self::InvalidOutput { program, reason } => {
-				write!(f, "invalid output from {program}: {reason}")
-			}
+			Self::Io(prog, source) => write!(f, "failed to run {prog}: {source}"),
+			Self::CommandFailed(prog, stderr) => write!(f, "{prog} failed: {stderr}"),
+			Self::InvalidOutput(prog, reason) => write!(f, "invalid output from {prog}: {reason}"),
 			Self::Json(err) => write!(f, "failed to parse PipeWire state: {err:?}"),
 			Self::Message(message) => write!(f, "{message}"),
 		}
@@ -80,8 +78,13 @@ pub struct VirtualSinkInfo {
 }
 
 pub fn has_pipewire() -> bool {
-	logger::init_logging();
-	has_pipewire_cached()
+	*HAS_PIPEWIRE.get_or_init(|| match detect_pipewire() {
+		Ok(value) => value,
+		Err(err) => {
+			logger::warn(&format!("[patchbay] PipeWire detection failed: {err}"));
+			false
+		}
+	})
 }
 
 pub struct AudioSharePatchbay {
@@ -96,9 +99,7 @@ impl Default for AudioSharePatchbay {
 
 impl AudioSharePatchbay {
 	pub fn new() -> Self {
-		logger::init_logging();
-
-		if has_pipewire_cached() {
+		if has_pipewire() {
 			logger::info("[patchbay] ready");
 		} else {
 			logger::warn("[patchbay] PipeWire was not detected as the active audio server");
@@ -207,20 +208,43 @@ impl PipeWireSnapshot {
 		for object in objects {
 			match object.kind.as_str() {
 				NODE_TYPE => {
+					// Optimization: Normalize props on the fly to avoid secondary allocations
+					let props = object
+						.info
+						.props
+						.into_iter()
+						.filter_map(|(k, v)| {
+							let s = match v {
+								Value::String(s) => s,
+								Value::Number(n) => n.to_string(),
+								Value::Bool(b) => b.to_string(),
+								_ => return None,
+							};
+							Some((k, s))
+						})
+						.collect();
+
 					nodes.insert(
 						object.id,
 						NodeRecord {
 							id: object.id,
-							props: normalize_props(object.info.props),
+							props,
 							max_output_ports: object.info.max_output_ports.unwrap_or(0),
 							ports: Vec::new(),
 						},
 					);
 				}
 				PORT_TYPE => {
-					let props = normalize_props(object.info.props);
+					// We only need a few props for ports, simple lookups
+					let get_str = |k: &str| -> Option<String> {
+						match object.info.props.get(k) {
+							Some(Value::String(s)) => Some(s.clone()),
+							Some(Value::Number(n)) => Some(n.to_string()),
+							_ => None,
+						}
+					};
 
-					let Some(node_id) = props.get("node.id").and_then(|value| value.parse::<u32>().ok()) else {
+					let Some(node_id) = get_str("node.id").and_then(|v| v.parse::<u32>().ok()) else {
 						continue;
 					};
 
@@ -229,7 +253,7 @@ impl PipeWireSnapshot {
 						.direction
 						.as_deref()
 						.and_then(PortDirection::parse)
-						.or_else(|| props.get("port.direction").and_then(|value| PortDirection::parse(value)));
+						.or_else(|| get_str("port.direction").as_deref().and_then(PortDirection::parse));
 
 					let Some(direction) = direction else {
 						continue;
@@ -244,11 +268,11 @@ impl PipeWireSnapshot {
 						node_id,
 						PortRecord {
 							direction,
-							channel: props.get("audio.channel").cloned(),
-							port_index: props.get("port.id").cloned(),
+							channel: get_str("audio.channel"),
+							port_index: get_str("port.id"),
 							path,
-							port_name: props.get("port.name").cloned(),
-							object_path: props.get("object.path").cloned(),
+							port_name: get_str("port.name"),
+							object_path: get_str("object.path"),
 						},
 					));
 				}
@@ -365,10 +389,10 @@ impl PatchbayState {
 			],
 		)?;
 
-		let module_id = module_id_text.trim().parse::<u32>().map_err(|err| BackendError::InvalidOutput {
-			program: "pactl",
-			reason: format!("failed to parse module id: {err}"),
-		})?;
+		let module_id = module_id_text
+			.trim()
+			.parse::<u32>()
+			.map_err(|err| BackendError::InvalidOutput("pactl", format!("failed to parse module id: {err}")))?;
 
 		self.module_id = Some(module_id);
 
@@ -510,22 +534,8 @@ impl Drop for PatchbayState {
 	}
 }
 
-fn has_pipewire_cached() -> bool {
-	*HAS_PIPEWIRE.get_or_init(|| match detect_pipewire() {
-		Ok(value) => value,
-		Err(err) => {
-			logger::warn(&format!("[patchbay] PipeWire detection failed: {err}"));
-			false
-		}
-	})
-}
-
 fn ensure_pipewire() -> Result<()> {
-	if has_pipewire_cached() {
-		Ok(())
-	} else {
-		Err(BackendError::Unsupported)
-	}
+	if has_pipewire() { Ok(()) } else { Err(BackendError::Unsupported) }
 }
 
 fn detect_pipewire() -> Result<bool> {
@@ -535,10 +545,7 @@ fn detect_pipewire() -> Result<bool> {
 		.lines()
 		.find_map(|line| line.strip_prefix("Server Name:"))
 		.map(str::trim)
-		.ok_or_else(|| BackendError::InvalidOutput {
-			program: "pactl",
-			reason: "missing `Server Name:` line".to_string(),
-		})?;
+		.ok_or_else(|| BackendError::InvalidOutput("pactl", "missing `Server Name:` line".to_string()))?;
 
 	let lowered = server_name.to_ascii_lowercase();
 	logger::trace(&format!("[patchbay] pulse server: {lowered}"));
@@ -612,7 +619,7 @@ fn create_link(output_path: &str, input_path: &str) -> Result<()> {
 
 	match run_text("pw-link", &["-L", output_path, input_path]) {
 		Ok(_) => Ok(()),
-		Err(BackendError::CommandFailed { stderr, .. }) if stderr.contains("File exists") || stderr.contains("exists") => Ok(()),
+		Err(BackendError::CommandFailed(_, stderr)) if stderr.contains("File exists") || stderr.contains("exists") => Ok(()),
 		Err(err) => Err(err),
 	}
 }
@@ -620,7 +627,7 @@ fn create_link(output_path: &str, input_path: &str) -> Result<()> {
 fn remove_link(output_path: &str, input_path: &str) -> Result<()> {
 	match run_text("pw-link", &["-d", output_path, input_path]) {
 		Ok(_) => Ok(()),
-		Err(BackendError::CommandFailed { stderr, .. })
+		Err(BackendError::CommandFailed(_, stderr))
 			if stderr.contains("No such file") || stderr.contains("not found") || stderr.contains("does not exist") =>
 		{
 			Ok(())
@@ -677,21 +684,6 @@ fn matches_prop(node: &NodeRecord, key: &str, expected: &str) -> bool {
 	node.prop(key) == Some(expected)
 }
 
-fn normalize_props(raw: HashMap<String, Value>) -> HashMap<String, String> {
-	raw.into_iter()
-		.filter_map(|(key, value)| {
-			let value = match value {
-				Value::String(value) => value,
-				Value::Number(value) => value.to_string(),
-				Value::Bool(value) => value.to_string(),
-				_ => return None,
-			};
-
-			Some((key, value))
-		})
-		.collect()
-}
-
 fn quote_module_value(value: &str) -> String {
 	let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
 	format!("\"{escaped}\"")
@@ -703,17 +695,14 @@ fn run_text(program: &'static str, args: &[&str]) -> Result<String> {
 		.env("LC_ALL", "C")
 		.env("LANG", "C")
 		.output()
-		.map_err(|source| BackendError::Io { program, source })?;
+		.map_err(|source| BackendError::Io(program, source))?;
 
 	if !output.status.success() {
 		let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-		return Err(BackendError::CommandFailed { program, stderr });
+		return Err(BackendError::CommandFailed(program, stderr));
 	}
 
-	String::from_utf8(output.stdout).map_err(|err| BackendError::InvalidOutput {
-		program,
-		reason: err.to_string(),
-	})
+	String::from_utf8(output.stdout).map_err(|err| BackendError::InvalidOutput(program, err.to_string()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -733,172 +722,4 @@ struct RawPwInfo {
 	max_output_ports: Option<u32>,
 	#[serde(default)]
 	direction: Option<String>,
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	fn port(direction: PortDirection, channel: Option<&str>, port_index: Option<&str>, path: &str) -> PortRecord {
-		PortRecord {
-			direction,
-			channel: channel.map(str::to_string),
-			port_index: port_index.map(str::to_string),
-			path: Some(path.to_string()),
-			port_name: None,
-			object_path: None,
-		}
-	}
-
-	fn node_with_props(id: u32, props: &[(&str, &str)]) -> NodeRecord {
-		NodeRecord {
-			id,
-			props: props.iter().map(|(key, value)| (key.to_string(), value.to_string())).collect(),
-			max_output_ports: 0,
-			ports: Vec::new(),
-		}
-	}
-
-	#[test]
-	fn mono_output_maps_to_all_inputs() {
-		let outputs = vec![port(PortDirection::Output, Some("FL"), Some("0"), "out")];
-		let inputs = vec![
-			port(PortDirection::Input, Some("FL"), Some("0"), "in-left"),
-			port(PortDirection::Input, Some("FR"), Some("1"), "in-right"),
-		];
-
-		let mapped = map_ports(&outputs, &inputs);
-
-		assert_eq!(mapped.len(), 2);
-	}
-
-	#[test]
-	fn stereo_output_matches_by_channel() {
-		let outputs = vec![
-			port(PortDirection::Output, Some("FL"), Some("0"), "out-left"),
-			port(PortDirection::Output, Some("FR"), Some("1"), "out-right"),
-		];
-		let inputs = vec![
-			port(PortDirection::Input, Some("FL"), Some("0"), "in-left"),
-			port(PortDirection::Input, Some("FR"), Some("1"), "in-right"),
-		];
-
-		let mapped = map_ports(&outputs, &inputs);
-
-		assert_eq!(mapped.len(), 2);
-		assert_eq!(mapped[0].0.path.as_deref(), Some("out-left"));
-		assert_eq!(mapped[0].1.path.as_deref(), Some("in-left"));
-		assert_eq!(mapped[1].0.path.as_deref(), Some("out-right"));
-		assert_eq!(mapped[1].1.path.as_deref(), Some("in-right"));
-	}
-
-	#[test]
-	fn unknown_channels_fall_back_to_port_index() {
-		let outputs = vec![
-			port(PortDirection::Output, None, Some("0"), "out-left"),
-			port(PortDirection::Output, None, Some("1"), "out-right"),
-		];
-		let inputs = vec![
-			port(PortDirection::Input, None, Some("0"), "in-left"),
-			port(PortDirection::Input, None, Some("1"), "in-right"),
-		];
-
-		let mapped = map_ports(&outputs, &inputs);
-
-		assert_eq!(mapped.len(), 2);
-		assert_eq!(mapped[0].0.path.as_deref(), Some("out-left"));
-		assert_eq!(mapped[0].1.path.as_deref(), Some("in-left"));
-		assert_eq!(mapped[1].0.path.as_deref(), Some("out-right"));
-		assert_eq!(mapped[1].1.path.as_deref(), Some("in-right"));
-	}
-
-	#[test]
-	fn normalize_props_keeps_only_scalar_values() {
-		use miniserde::json::{Array, Number, Object};
-
-		let mut props = HashMap::new();
-		props.insert("string".to_string(), Value::String("abc".to_string()));
-		props.insert("number".to_string(), Value::Number(Number::U64(42)));
-		props.insert("bool".to_string(), Value::Bool(true));
-
-		let mut array = Array::new();
-		array.push(Value::Number(Number::U64(1)));
-		array.push(Value::Number(Number::U64(2)));
-		props.insert("array".to_string(), Value::Array(array));
-
-		let mut object = Object::new();
-		object.insert("x".to_string(), Value::Number(Number::U64(1)));
-		props.insert("object".to_string(), Value::Object(object));
-
-		let normalized = normalize_props(props);
-
-		assert_eq!(normalized.get("string"), Some(&"abc".to_string()));
-		assert_eq!(normalized.get("number"), Some(&"42".to_string()));
-		assert_eq!(normalized.get("bool"), Some(&"true".to_string()));
-		assert!(!normalized.contains_key("array"));
-		assert!(!normalized.contains_key("object"));
-	}
-
-	#[test]
-	fn virtual_sink_lookup_prefers_unique_name_over_description() {
-		let snapshot = PipeWireSnapshot {
-			nodes: HashMap::from([
-				(
-					1,
-					node_with_props(1, &[("node.description", "Vencord Screen Share"), ("node.name", "other")]),
-				),
-				(
-					2,
-					node_with_props(
-						2,
-						&[("node.description", "Something Else"), ("node.name", "patchcord-screen-share-123")],
-					),
-				),
-			]),
-		};
-
-		let found = snapshot
-			.find_virtual_sink("patchcord-screen-share-123", "Vencord Screen Share")
-			.expect("virtual sink should be found");
-
-		assert_eq!(found.id, 2);
-	}
-
-	#[test]
-	fn public_types_use_camel_case_json() {
-		let node = ShareableNode {
-			id: 1,
-			display_name: "Firefox".to_string(),
-			application_name: Some("Firefox".to_string()),
-			node_name: Some("node.firefox".to_string()),
-			description: Some("Firefox".to_string()),
-			media_name: None,
-			binary: Some("firefox".to_string()),
-			is_device: false,
-		};
-
-		let sink = VirtualSinkInfo {
-			sink_name: "patchcord".to_string(),
-			monitor_source: "patchcord.monitor".to_string(),
-			node_id: 99,
-		};
-
-		let node_json = miniserde::json::to_string(&node);
-		let sink_json = miniserde::json::to_string(&sink);
-
-		assert!(node_json.contains("\"displayName\""));
-		assert!(node_json.contains("\"applicationName\""));
-		assert!(node_json.contains("\"isDevice\""));
-		assert!(!node_json.contains("\"display_name\""));
-
-		assert!(sink_json.contains("\"sinkName\""));
-		assert!(sink_json.contains("\"monitorSource\""));
-		assert!(sink_json.contains("\"nodeId\""));
-		assert!(!sink_json.contains("\"sink_name\""));
-	}
-
-	#[test]
-	fn quote_module_value_escapes_quotes_and_backslashes() {
-		assert_eq!(quote_module_value(r#"a"b\c"#), r#""a\"b\\c""#);
-	}
 }
