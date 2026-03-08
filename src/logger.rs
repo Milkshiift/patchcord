@@ -16,7 +16,7 @@ enum Level {
 }
 
 impl Level {
-    fn as_str(self) -> &'static str {
+    const fn as_str(self) -> &'static str {
         match self {
             Self::Error => "ERROR",
             Self::Warn => "WARN",
@@ -77,7 +77,7 @@ pub fn init_logging() {
     let _ = get_logger();
 }
 
-fn should_log(level: Level, logger: &Logger) -> bool {
+const fn should_log(level: Level, logger: &Logger) -> bool {
     match level {
         Level::Error | Level::Warn | Level::Info => true,
         Level::Debug | Level::Trace => logger.trace_enabled,
@@ -95,12 +95,11 @@ fn write_line(level: Level, message: &str) {
 
     eprintln!("{line}");
 
-    if let Some(file) = &logger.file {
-        if let Ok(mut file) = file.lock() {
+    if let Some(file) = &logger.file
+        && let Ok(mut file) = file.lock() {
             let _ = writeln!(file, "{line}");
             let _ = file.flush();
         }
-    }
 }
 
 pub fn error(message: &str) {

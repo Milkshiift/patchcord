@@ -53,7 +53,7 @@ impl fmt::Display for BackendError {
             Self::InvalidOutput { program, reason } => {
                 write!(f, "invalid output from {program}: {reason}")
             }
-            Self::Json(err) => write!(f, "failed to parse PipeWire state: {:?}", err),
+            Self::Json(err) => write!(f, "failed to parse PipeWire state: {err:?}"),
             Self::Message(message) => write!(f, "{message}"),
         }
     }
@@ -276,11 +276,10 @@ impl PipeWireSnapshot {
         }
 
         for (node_id, mut port) in pending_ports {
-            if let Some(node) = nodes.get(&node_id) {
-                if port.path.is_none() {
+            if let Some(node) = nodes.get(&node_id)
+                && port.path.is_none() {
                     port.path = fallback_port_path(node, &port);
                 }
-            }
 
             if let Some(node) = nodes.get_mut(&node_id) {
                 node.ports.push(port);
@@ -456,7 +455,7 @@ impl PatchbayState {
             }
 
             let Some(node) = snapshot.nodes.get(&node_id) else {
-                logger::warn(&format!("[patchbay] node {} does not exist", node_id));
+                logger::warn(&format!("[patchbay] node {node_id} does not exist"));
                 continue;
             };
 
@@ -468,8 +467,7 @@ impl PatchbayState {
 
             if outputs.is_empty() {
                 logger::debug(&format!(
-                    "[patchbay] node {} has no usable output ports",
-                    node_id
+                    "[patchbay] node {node_id} has no usable output ports"
                 ));
                 continue;
             }
@@ -492,8 +490,7 @@ impl PatchbayState {
                     }
                     Err(err) => {
                         logger::warn(&format!(
-                            "[patchbay] failed to link {} -> {}: {}",
-                            output_path, input_path, err
+                            "[patchbay] failed to link {output_path} -> {input_path}: {err}"
                         ));
                     }
                 }

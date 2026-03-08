@@ -114,10 +114,10 @@ fn main() -> io::Result<()> {
         let request = match miniserde::json::from_str::<Request>(&line) {
             Ok(request) => request,
             Err(err) => {
-                logger::warn(&format!("[helper] invalid request: {:?}", err));
+                logger::warn(&format!("[helper] invalid request: {err:?}"));
                 write_json_line(
                     &mut stdout,
-                    &ErrorResponse { id: 0u64, error: format!("invalid request: {:?}", err) },
+                    &ErrorResponse { id: 0u64, error: format!("invalid request: {err:?}") },
                 )?;
                 continue;
             }
