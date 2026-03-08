@@ -1,0 +1,18 @@
+[package]
+name = "patchcord"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+miniserde = { git = "https://github.com/Milkshiift/miniserde" }
+
+[profile.release]
+lto = "fat"
+strip = "symbols"
+opt-level = "z"
+panic = "abort"
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+unwrap_used = "deny"

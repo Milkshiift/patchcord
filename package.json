@@ -1,0 +1,14 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:node": "bun run build.ts",
+    "test:node": "bun run build:node && node --test node/test/*.test.mjs",
+    "test": "cargo test && bun run test:node"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "@types/bun": "latest",
+    "typescript": "5.9.3"
+  }
+}
