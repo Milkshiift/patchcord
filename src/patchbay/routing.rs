@@ -94,3 +94,50 @@ pub fn map_ports(outputs: &[PortRecord], inputs: &[PortRecord]) -> Vec<(PortReco
 
 	mapped
 }
+
+
+#[cfg(test)]
+mod tests {
+	use crate::patchbay::models::PortDirection;
+	use super::*;
+
+	#[test]
+	fn test_channel_role_parsing() {
+		assert_eq!(channel_role(Some("FL")), ChannelRole::Left);
+		assert_eq!(channel_role(Some("front-right")), ChannelRole::Right);
+		assert_eq!(channel_role(Some("MONO")), ChannelRole::Both);
+		assert_eq!(channel_role(None), ChannelRole::Unknown);
+		assert_eq!(channel_role(Some("weird-channel")), ChannelRole::Unknown);
+	}
+
+	#[test]
+	fn test_map_ports() {
+		fn make_port(channel: &str, path: &str) -> PortRecord {
+			PortRecord {
+				direction: PortDirection::Output,
+				channel: Some(channel.to_string()),
+				port_index: None,
+				path: Some(path.to_string()),
+				port_name: None,
+				object_path: None,
+			}
+		}
+
+		let out_l = make_port("FL", "app:out_FL");
+		let out_r = make_port("FR", "app:out_FR");
+		let in_l = make_port("FL", "sink:in_FL");
+		let in_r = make_port("FR", "sink:in_FR");
+
+		let outputs = vec![out_l.clone(), out_r.clone()];
+		let inputs = vec![in_l.clone(), in_r.clone()];
+
+		let mapped = map_ports(&outputs, &inputs);
+		
+		assert_eq!(mapped.len(), 2);
+		assert_eq!(mapped[0].0.path, out_l.path);
+		assert_eq!(mapped[0].1.path, in_l.path);
+
+		assert_eq!(mapped[1].0.path, out_r.path);
+		assert_eq!(mapped[1].1.path, in_r.path);
+	}
+}

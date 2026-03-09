@@ -380,3 +380,78 @@ fn quote_module_value(value: &str) -> String {
 	let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
 	format!("\"{escaped}\"")
 }
+
+
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_quote_module_value() {
+		// Standard string
+		assert_eq!(quote_module_value("Vencord Share"), "\"Vencord Share\"");
+
+		// String with quotes (should be escaped)
+		assert_eq!(quote_module_value("My \"App\""), "\"My \\\"App\\\"\"");
+
+		// String with slashes
+		assert_eq!(quote_module_value("C:\\App"), "\"C:\\\\App\"");
+	}
+
+	#[test]
+	fn test_dedupe_node_ids() {
+		let input = vec![1, 2, 2, 3, 1, 4];
+		let expected = vec![1, 2, 3, 4];
+		assert_eq!(dedupe_node_ids(input), expected);
+	}
+
+	#[test]
+	#[ignore = "Requires a live PipeWire/PulseAudio session"]
+	fn test_integration_virtual_sink_lifecycle() {
+		// Ensure PipeWire is actually running before we test
+		if let Err(e) = super::super::ensure_pipewire() {
+			panic!("Cannot run integration test: PipeWire not detected. ({e})");
+		}
+
+		let mut state = PatchbayState::new();
+
+		// 1. Create the virtual sink in the OS
+		let info = state.ensure_virtual_sink().expect("Failed to create virtual sink");
+		assert!(info.sink_name.starts_with("patchcord-screen-share-"));
+		assert!(state.module_id.is_some(), "pactl module_id should be captured");
+
+		// 2. Fetch the live PipeWire graph and verify it exists
+		let snapshot = PipeWireSnapshot::collect().expect("Failed to collect snapshot");
+		let found_node = snapshot.find_virtual_sink(&info.sink_name, &state.sink_description);
+		assert!(found_node.is_some(), "Virtual sink was created via pactl but not found in pw-dump!");
+
+		// 3. Trigger cleanup
+		state.dispose().expect("Failed to dispose virtual sink");
+
+		// 4. Fetch the live graph again and verify it's gone
+		let snapshot_after = PipeWireSnapshot::collect().expect("Failed to collect snapshot");
+		let found_after = snapshot_after.find_virtual_sink(&info.sink_name, &state.sink_description);
+		assert!(found_after.is_none(), "Virtual sink should be removed from the system after dispose");
+	}
+
+	#[test]
+	#[ignore = "Requires a live PipeWire session with at least one audio device"]
+	fn test_integration_list_nodes() {
+		if super::super::ensure_pipewire().is_err() {
+			return; // Skip if no PipeWire
+		}
+
+		let state = PatchbayState::new();
+
+		// Include devices so we are guaranteed to find *something* (like the hardware soundcard)
+		let nodes = state.list_shareable_nodes(true).expect("Failed to list nodes");
+
+		assert!(!nodes.is_empty(), "Expected to find at least one shareable device/app on the system");
+
+		// Print them out so you can manually inspect the output when testing
+		for node in nodes.iter().take(3) {
+			println!("Found node: {} (ID: {})", node.display_name, node.id);
+		}
+	}
+}

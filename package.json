@@ -1,13 +1,26 @@
 {
-  "private": true,
+  "name": "patchcord",
+  "version": "1.0.0",
   "type": "module",
+  "main": "./node/dist/index.js",
+  "types": "./node/dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./node/dist/index.d.ts",
+      "import": "./node/dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build:rust": "cargo build --release",
     "build:node": "bun run build-node.ts",
     "build:dist": "bash ./build-rs.sh",
     "build": "bun run build:rust && bun run build:node",
     "test:node": "bun run build:node && node --test node/test/*.test.mjs",
-    "test": "cargo test && bun run test:node"
+    "test:rust": "cargo test -- --include-ignored --nocapture",
+    "test": "bun run test:rust && bun run test:node"
   },
   "devDependencies": {
     "@types/node": "latest",
