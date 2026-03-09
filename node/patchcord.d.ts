@@ -17,7 +17,7 @@ export interface VirtualSinkInfo {
 }
 
 export interface AudioSharePatchbayOptions {
-    command?: string;
+    command: string;
     args?: readonly string[];
     cwd?: string;
     env?: NodeJS.ProcessEnv;

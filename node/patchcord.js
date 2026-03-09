@@ -1,26 +1,5 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
-
-// @ts-expect-error
-import x64Path from '../dist/patchcord-linux-x64' with { type: 'file' };
-// @ts-expect-error
-import arm64Path from '../dist/patchcord-linux-arm64' with { type: 'file' };
-
-function resolvePatchcordBinary() {
-    if (process.platform !== 'linux') {
-        throw new Error(`Only Linux platforms are supported`);
-    }
-
-    const bundleDir = dirname(fileURLToPath(import.meta.url));
-
-    const arch = process.arch;
-    if (arch === 'x64') return resolve(bundleDir, x64Path);
-    if (arch === 'arm64') return resolve(bundleDir, arm64Path);
-
-    throw new Error(`Unsupported architecture for patchcord binary: ${arch}`);
-}
 
 export class AudioSharePatchbay {
     #child;
@@ -37,9 +16,7 @@ export class AudioSharePatchbay {
         this.#requestTimeoutMs = sanitizeTimeout(options.requestTimeoutMs, 15_000);
         this.#shutdownTimeoutMs = sanitizeTimeout(options.shutdownTimeoutMs, 2_000);
 
-        const command = options.command ?? resolvePatchcordBinary();
-
-        this.#child = spawn(command, options.args ?? [], {
+        this.#child = spawn(options.command, options.args ?? [], {
             cwd: options.cwd,
             env: options.env,
             stdio: ['pipe', 'pipe', 'inherit'],
