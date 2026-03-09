@@ -7,6 +7,12 @@ use miniserde::{Deserialize, Serialize};
 use patchbay::{AudioSharePatchbay, has_pipewire};
 
 #[derive(Debug, Deserialize)]
+struct RequestEnvelope {
+	#[serde(default)]
+	id: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(tag = "method")]
 enum Request {
 	#[serde(rename = "hasPipeWire")]
@@ -89,16 +95,10 @@ fn handle_request(out: &mut impl Write, patchbay: &mut AudioSharePatchbay, reque
 			write_result(out, id, patchbay.route_nodes(node_ids))?;
 		}
 		Request::ClearRoutes { id } => {
-			write_result(out, id, {
-				patchbay.clear_routes();
-				Ok::<(), String>(())
-			})?;
+			write_result(out, id, patchbay.clear_routes())?;
 		}
 		Request::Dispose { id } => {
-			write_result(out, id, {
-				patchbay.dispose();
-				Ok::<(), String>(())
-			})?;
+			write_result(out, id, patchbay.dispose())?;
 			return Ok(false);
 		}
 	}
@@ -118,6 +118,11 @@ fn main() -> io::Result<()> {
 			continue;
 		}
 
+		let request_id = miniserde::json::from_str::<RequestEnvelope>(&line)
+			.ok()
+			.and_then(|envelope| envelope.id)
+			.unwrap_or(0);
+
 		let request = match miniserde::json::from_str::<Request>(&line) {
 			Ok(request) => request,
 			Err(err) => {
@@ -125,7 +130,7 @@ fn main() -> io::Result<()> {
 				write_json_line(
 					&mut stdout,
 					&ErrorResponse {
-						id: 0u64,
+						id: request_id,
 						error: format!("invalid request: {err:?}"),
 					},
 				)?;

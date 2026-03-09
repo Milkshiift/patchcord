@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createInterface } from 'node:readline';
+import { createInterface, type Interface } from 'node:readline';
 
 export interface ShareableNode {
   id: number;
@@ -24,10 +24,12 @@ export interface AudioSharePatchbayOptions {
   args?: readonly string[];
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  requestTimeoutMs?: number;
+  shutdownTimeoutMs?: number;
 }
 
 interface ResponseMessage {
-  id: number;
+  id: unknown;
   result?: unknown;
   error?: unknown;
 }
@@ -35,20 +37,42 @@ interface ResponseMessage {
 type PendingRequest = {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
+  timer: NodeJS.Timeout;
 };
 
 export class AudioSharePatchbay {
   #child: ChildProcess;
+  #lines: Interface;
   #closed = false;
+  #closing = false;
   #nextId = 1;
   #pending = new Map<number, PendingRequest>();
   #exitPromise: Promise<void>;
+  #requestTimeoutMs: number;
+  #shutdownTimeoutMs: number;
 
   constructor(options: AudioSharePatchbayOptions) {
+    this.#requestTimeoutMs = sanitizeTimeout(options.requestTimeoutMs, 15_000);
+    this.#shutdownTimeoutMs = sanitizeTimeout(options.shutdownTimeoutMs, 2_000);
+
     this.#child = spawn(options.command, options.args ?? [], {
       cwd: options.cwd,
       env: options.env,
       stdio: ['pipe', 'pipe', 'inherit'],
+    });
+
+    const stdin = this.#child.stdin;
+    const stdout = this.#child.stdout;
+
+    if (!stdin || !stdout) {
+      this.#closed = true;
+      this.#closing = true;
+      throw new Error('patchcord failed to start with piped stdin/stdout');
+    }
+
+    this.#lines = createInterface({
+      input: stdout,
+      crlfDelay: Infinity,
     });
 
     this.#exitPromise = new Promise((resolve) => {
@@ -56,20 +80,18 @@ export class AudioSharePatchbay {
       this.#child.once('error', () => resolve());
     });
 
-    this.#child.stdin!.on('error', () => {});
+    stdin.on('error', () => {});
 
-    const lines = createInterface({ input: this.#child.stdout! });
-
-    lines.on('line', (line) => {
+    this.#lines.on('line', (line) => {
       this.#handleLine(line);
     });
 
     this.#child.on('error', (error) => {
-      this.#failAll(error instanceof Error ? error : new Error(String(error)));
+      this.#abortProcess(normalizeError(error));
     });
 
     this.#child.on('exit', (code, signal) => {
-      lines.close();
+      this.#lines.close();
       this.#failAll(
           new Error(`patchcord exited (${signal ?? code ?? 'unknown'})`),
       );
@@ -85,19 +107,24 @@ export class AudioSharePatchbay {
       return;
     }
 
-    if (typeof message.id !== 'number') {
+    if (!Number.isSafeInteger(message.id) || (message.id as number) < 0) {
       return;
     }
 
-    const pending = this.#pending.get(message.id);
+    const id = message.id as number;
+    const pending = this.#pending.get(id);
+
     if (!pending) {
       return;
     }
 
-    this.#pending.delete(message.id);
+    this.#pending.delete(id);
+    clearTimeout(pending.timer);
 
-    if (typeof message.error === 'string') {
-      pending.reject(new Error(message.error));
+    const errorMessage = normalizeRemoteError(message.error);
+
+    if (errorMessage !== null) {
+      pending.reject(new Error(errorMessage));
       return;
     }
 
@@ -105,21 +132,43 @@ export class AudioSharePatchbay {
   }
 
   #failAll(error: Error): void {
-    if (this.#closed) {
-      return;
-    }
-
     this.#closed = true;
+    this.#closing = true;
 
     for (const pending of this.#pending.values()) {
+      clearTimeout(pending.timer);
       pending.reject(error);
     }
 
     this.#pending.clear();
   }
 
-  #request<T>(method: string, payload: Record<string, unknown> = {}): Promise<T> {
+  #abortProcess(error: Error): void {
+    this.#failAll(error);
+
+    try {
+      this.#child.kill('SIGKILL');
+    } catch {
+      // ignore
+    }
+  }
+
+  #sendRequest<T>(
+      method: string,
+      payload: Record<string, unknown> = {},
+      allowWhenClosing = false,
+  ): Promise<T> {
     if (this.#closed) {
+      return Promise.reject(new Error('patchcord is not running'));
+    }
+
+    if (this.#closing && !allowWhenClosing) {
+      return Promise.reject(new Error('patchcord is shutting down'));
+    }
+
+    const stdin = this.#child.stdin;
+
+    if (!stdin || stdin.destroyed || stdin.writableEnded) {
       return Promise.reject(new Error('patchcord is not running'));
     }
 
@@ -127,25 +176,51 @@ export class AudioSharePatchbay {
     const line = JSON.stringify({ id, method, ...payload }) + '\n';
 
     return new Promise<T>((resolve, reject) => {
-      this.#pending.set(id, {
-        resolve: resolve as (value: unknown) => void,
-        reject,
-      });
-
-      this.#child.stdin!.write(line, 'utf8', (error) => {
-        if (!error) {
-          return;
-        }
-
+      const timer = setTimeout(() => {
         const pending = this.#pending.get(id);
+
         if (!pending) {
           return;
         }
 
         this.#pending.delete(id);
-        pending.reject(error instanceof Error ? error : new Error(String(error)));
+
+        const error = new Error(
+            `patchcord request timed out after ${this.#requestTimeoutMs}ms (${method})`,
+        );
+
+        pending.reject(error);
+        this.#abortProcess(error);
+      }, this.#requestTimeoutMs);
+
+      timer.unref?.();
+
+      this.#pending.set(id, {
+        resolve: resolve as (value: unknown) => void,
+        reject,
+        timer,
+      });
+
+      stdin.write(line, 'utf8', (error) => {
+        if (!error) {
+          return;
+        }
+
+        const pending = this.#pending.get(id);
+
+        if (!pending) {
+          return;
+        }
+
+        this.#pending.delete(id);
+        clearTimeout(pending.timer);
+        pending.reject(normalizeError(error));
       });
     });
+  }
+
+  #request<T>(method: string, payload: Record<string, unknown> = {}): Promise<T> {
+    return this.#sendRequest<T>(method, payload, false);
   }
 
   async hasPipeWire(): Promise<boolean> {
@@ -153,7 +228,9 @@ export class AudioSharePatchbay {
   }
 
   async listShareableNodes(includeDevices = false): Promise<ShareableNode[]> {
-    return this.#request<ShareableNode[]>('listShareableNodes', { includeDevices });
+    return this.#request<ShareableNode[]>('listShareableNodes', {
+      includeDevices,
+    });
   }
 
   async ensureVirtualSink(): Promise<VirtualSinkInfo> {
@@ -170,28 +247,55 @@ export class AudioSharePatchbay {
 
   async dispose(): Promise<void> {
     if (this.#closed) {
+      await this.#exitPromise.catch(() => {});
       return;
     }
 
+    if (this.#closing) {
+      await this.#exitPromise.catch(() => {});
+      return;
+    }
+
+    this.#closing = true;
+
+    const shutdownTimer = setTimeout(() => {
+      this.#abortProcess(
+          new Error(
+              `patchcord did not shut down within ${this.#shutdownTimeoutMs}ms`,
+          ),
+      );
+    }, this.#shutdownTimeoutMs);
+
+    shutdownTimer.unref?.();
+
+    let requestError: unknown;
+
     try {
-      await this.#request<null>('dispose');
+      await this.#sendRequest<null>('dispose', {}, true);
     } catch (error) {
-      if (!this.#closed) {
-        throw error;
-      }
+      requestError = error;
     } finally {
-      this.#closed = true;
-      this.#child.stdin!.end();
+      this.#child.stdin?.end();
 
-      // Prevent Node.js from hanging indefinitely if the child process deadlocks
-      const killTimer = setTimeout(() => {
-        this.#child.kill('SIGKILL');
-      }, 2000);
+      try {
+        await this.#exitPromise;
+      } finally {
+        clearTimeout(shutdownTimer);
+        this.#closed = true;
+        this.#closing = true;
+      }
+    }
 
-      killTimer.unref?.();
+    if (requestError && !this.#closed) {
+      throw normalizeError(requestError);
+    }
 
-      await this.#exitPromise;
-      clearTimeout(killTimer);
+    if (
+        requestError &&
+        requestError instanceof Error &&
+        !requestError.message.startsWith('patchcord exited (')
+    ) {
+      throw requestError;
     }
   }
 }
@@ -210,4 +314,24 @@ export async function hasPipeWire(
       // ignore shutdown errors
     }
   }
+}
+
+function sanitizeTimeout(value: number | undefined, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return fallback;
+  }
+
+  return Math.floor(value);
+}
+
+function normalizeError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
+}
+
+function normalizeRemoteError(value: unknown): string | null {
+  if (value == null) {
+    return null;
+  }
+
+  return typeof value === 'string' ? value : String(value);
 }
