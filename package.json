@@ -13,6 +13,8 @@
   "files": [
     "dist"
   ],
+  "cpu": ["x64", "arm64"],
+  "os": ["linux"],
   "scripts": {
     "build": "cargo build --release",
     "build:dist": "bash ./build-rs.sh",
