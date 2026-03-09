@@ -1,8 +1,6 @@
-import { AudioSharePatchbay } from '../dist/index.js';
+import { AudioSharePatchbay } from '../patchcord.js';
 
-const patchbay = new AudioSharePatchbay({
-    command: "./dist/patchcord-linux-x64"
-})
+const patchbay = new AudioSharePatchbay({})
 
 console.log("Has PipeWire:", await patchbay.hasPipeWire());
 console.log(await patchbay.listShareableNodes(false));

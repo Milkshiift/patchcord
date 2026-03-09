@@ -2,29 +2,22 @@
   "name": "patchcord",
   "version": "1.0.0",
   "type": "module",
-  "main": "./node/dist/index.js",
-  "types": "./node/dist/index.d.ts",
+  "main": "./node/patchcord.js",
+  "types": "./node/patchcord.d.ts",
   "exports": {
     ".": {
-      "types": "./node/dist/index.d.ts",
-      "import": "./node/dist/index.js"
+      "types": "./node/patchcord.d.ts",
+      "import": "./node/patchcord.js"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build:rust": "cargo build --release",
-    "build:node": "bun run build-node.ts",
+    "build": "cargo build --release",
     "build:dist": "bash ./build-rs.sh",
-    "build": "bun run build:rust && bun run build:node",
-    "test:node": "bun run build:node && node --test node/test/*.test.mjs",
+    "test:node": "bun test node/test/*.test.mjs",
     "test:rust": "cargo test -- --include-ignored --nocapture",
     "test": "bun run test:rust && bun run test:node"
-  },
-  "devDependencies": {
-    "@types/node": "latest",
-    "@types/bun": "latest",
-    "typescript": "5.9.3"
   }
 }

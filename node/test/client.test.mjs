@@ -3,7 +3,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { AudioSharePatchbay, hasPipeWire } from '../dist/index.js';
+import { AudioSharePatchbay, hasPipeWire } from '../patchcord.js';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const helperScript = path.join(testDir, 'mock-helper.mjs');
