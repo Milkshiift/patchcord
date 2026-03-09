@@ -2,7 +2,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:node": "bun run build.ts",
+    "build:rust": "cargo build --release",
+    "build:node": "bun run build-node.ts",
+    "build:dist": "bash ./build-rs.sh",
+    "build": "bun run build:rust && bun run build:node",
     "test:node": "bun run build:node && node --test node/test/*.test.mjs",
     "test": "cargo test && bun run test:node"
   },

@@ -9,6 +9,7 @@ export interface ShareableNode {
   description: string | null;
   mediaName: string | null;
   binary: string | null;
+  processId: number | null;
   isDevice: boolean;
 }
 
@@ -52,7 +53,10 @@ export class AudioSharePatchbay {
 
     this.#exitPromise = new Promise((resolve) => {
       this.#child.once('exit', () => resolve());
+      this.#child.once('error', () => resolve());
     });
+
+    this.#child.stdin!.on('error', () => {});
 
     const lines = createInterface({ input: this.#child.stdout! });
 
@@ -178,7 +182,16 @@ export class AudioSharePatchbay {
     } finally {
       this.#closed = true;
       this.#child.stdin!.end();
+
+      // Prevent Node.js from hanging indefinitely if the child process deadlocks
+      const killTimer = setTimeout(() => {
+        this.#child.kill('SIGKILL');
+      }, 2000);
+
+      killTimer.unref?.();
+
       await this.#exitPromise;
+      clearTimeout(killTimer);
     }
   }
 }

@@ -19,7 +19,6 @@ static HAS_PIPEWIRE: OnceLock<bool> = OnceLock::new();
 
 const NODE_TYPE: &str = "PipeWire:Interface:Node";
 const PORT_TYPE: &str = "PipeWire:Interface:Port";
-const REQUIRED_NODE_PROPS: [&str; 2] = ["application.name", "node.name"];
 
 pub type Result<T> = std::result::Result<T, BackendError>;
 
@@ -66,6 +65,7 @@ pub struct ShareableNode {
 	pub description: Option<String>,
 	pub media_name: Option<String>,
 	pub binary: Option<String>,
+	pub process_id: Option<u32>,
 	pub is_device: bool,
 }
 
@@ -185,7 +185,13 @@ impl NodeRecord {
 	}
 
 	fn is_device(&self) -> bool {
-		self.prop("device.id").is_some_and(|value| !value.is_empty())
+		let has_device_id = self.prop("device.id").is_some_and(|value| !value.is_empty());
+		// Catch Virtual Sinks/Sources that don't have a hardware device.id
+		let is_audio_device = self
+			.prop("media.class")
+			.is_some_and(|c| c.starts_with("Audio/Sink") || c.starts_with("Audio/Source"));
+
+		has_device_id || is_audio_device
 	}
 }
 
@@ -199,16 +205,12 @@ impl PipeWireSnapshot {
 		let dump = run_text("pw-dump", &[])?;
 		let objects: Vec<RawPwObject> = miniserde::json::from_str(&dump)?;
 
-		let output_paths = parse_link_paths(PortDirection::Output)?;
-		let input_paths = parse_link_paths(PortDirection::Input)?;
-
 		let mut nodes = HashMap::<u32, NodeRecord>::new();
 		let mut pending_ports = Vec::<(u32, PortRecord)>::new();
 
 		for object in objects {
 			match object.kind.as_str() {
 				NODE_TYPE => {
-					// Optimization: Normalize props on the fly to avoid secondary allocations
 					let props = object
 						.info
 						.props
@@ -235,7 +237,6 @@ impl PipeWireSnapshot {
 					);
 				}
 				PORT_TYPE => {
-					// We only need a few props for ports, simple lookups
 					let get_str = |k: &str| -> Option<String> {
 						match object.info.props.get(k) {
 							Some(Value::String(s)) => Some(s.clone()),
@@ -259,18 +260,13 @@ impl PipeWireSnapshot {
 						continue;
 					};
 
-					let path = match direction {
-						PortDirection::Input => input_paths.get(&object.id).cloned(),
-						PortDirection::Output => output_paths.get(&object.id).cloned(),
-					};
-
 					pending_ports.push((
 						node_id,
 						PortRecord {
 							direction,
 							channel: get_str("audio.channel"),
 							port_index: get_str("port.id"),
-							path,
+							path: None, // Filled in the second pass
 							port_name: get_str("port.name"),
 							object_path: get_str("object.path"),
 						},
@@ -281,13 +277,8 @@ impl PipeWireSnapshot {
 		}
 
 		for (node_id, mut port) in pending_ports {
-			if let Some(node) = nodes.get(&node_id)
-				&& port.path.is_none()
-			{
-				port.path = fallback_port_path(node, &port);
-			}
-
 			if let Some(node) = nodes.get_mut(&node_id) {
+				port.path = fallback_port_path(node, &port);
 				node.ports.push(port);
 			}
 		}
@@ -341,11 +332,15 @@ impl PatchbayState {
 			.values()
 			.filter(|node| Some(node.id) != virtual_sink_id)
 			.filter(|node| node.max_output_ports > 0 || node.output_ports().next().is_some())
-			.filter(|node| include_devices || !node.is_device())
 			.filter(|node| {
-				REQUIRED_NODE_PROPS
-					.iter()
-					.all(|key| node.prop(key).is_some_and(|value| !value.is_empty()))
+				let is_app = node.prop("application.name").is_some_and(|v| !v.is_empty())
+					|| node.prop("application.process.binary").is_some_and(|v| !v.is_empty());
+
+				if node.is_device() {
+					include_devices // If it's a device (Hardware or Virtual Sink), only allow if requested
+				} else {
+					is_app // For normal nodes, strictly require them to be real applications
+				}
 			})
 			.map(to_shareable_node)
 			.collect::<Vec<_>>();
@@ -399,9 +394,16 @@ impl PatchbayState {
 		let deadline = Instant::now() + Duration::from_secs(3);
 
 		loop {
-			if let Some(info) = self.virtual_sink_info()? {
-				logger::info(&format!("[patchbay] virtual sink ready: {} ({})", info.sink_name, info.node_id));
-				return Ok(info);
+			// Catch and ignore transient JSON errors during active graph rebuilding
+			match self.virtual_sink_info() {
+				Ok(Some(info)) => {
+					logger::info(&format!("[patchbay] virtual sink ready: {} ({})", info.sink_name, info.node_id));
+					return Ok(info);
+				}
+				Ok(None) => {}
+				Err(err) => {
+					logger::trace(&format!("[patchbay] transient error while waiting for sink: {err}"));
+				}
 			}
 
 			if Instant::now() >= deadline {
@@ -458,12 +460,8 @@ impl PatchbayState {
 			}
 
 			for (output, input) in map_ports(&outputs, &sink_inputs) {
-				let Some(output_path) = output.path.as_deref() else {
-					continue;
-				};
-				let Some(input_path) = input.path.as_deref() else {
-					continue;
-				};
+				let Some(output_path) = output.path.as_deref() else { continue };
+				let Some(input_path) = input.path.as_deref() else { continue };
 
 				match create_link(output_path, input_path) {
 					Ok(()) => {
@@ -558,25 +556,34 @@ fn map_ports(outputs: &[PortRecord], inputs: &[PortRecord]) -> Vec<(PortRecord, 
 		return Vec::new();
 	}
 
-	let is_mono = outputs.len() == 1;
 	let mut mapped = Vec::new();
 
 	for output in outputs {
-		for input in inputs {
-			let channels_match = if is_mono {
-				true
-			} else {
-				let out_channel = output.channel.as_deref().unwrap_or("UNK");
-				let in_channel = input.channel.as_deref().unwrap_or("UNK");
+		let out_channel = output.channel.as_deref().unwrap_or("UNK").to_ascii_uppercase();
 
-				if out_channel == "UNK" || in_channel == "UNK" {
-					output.port_index == input.port_index
-				} else {
-					out_channel == in_channel
+		for input in inputs {
+			let in_channel = input.channel.as_deref().unwrap_or("UNK").to_ascii_uppercase();
+			let is_left_input = in_channel == "FL" || in_channel == "FRONT-LEFT";
+			let is_right_input = in_channel == "FR" || in_channel == "FRONT-RIGHT";
+
+			let channels_match = match out_channel.as_str() {
+				"FL" | "SL" | "RL" | "FLC" => is_left_input,  // Map all left speakers to Left Sink
+				"FR" | "SR" | "RR" | "FRC" => is_right_input, // Map all right speakers to Right Sink
+				"FC" | "LFE" | "RC" | "MONO" => true,         // Mix center/sub/mono into BOTH channels
+				"UNK" => {
+					if outputs.len() == 1 {
+						true // Mono downmix fallback
+					} else {
+						output.port_index == input.port_index
+					}
 				}
+				_ => true, // Unknown channel mappings default to mixing everywhere rather than silencing audio
 			};
 
-			if channels_match {
+			// Backup validation: If input channel is missing entirely, try generic index link fallback
+			let is_valid = channels_match || (in_channel == "UNK" && output.port_index == input.port_index);
+
+			if is_valid {
 				mapped.push((output.clone(), input.clone()));
 			}
 		}
@@ -594,6 +601,7 @@ fn to_shareable_node(node: &NodeRecord) -> ShareableNode {
 		.map(str::to_string);
 	let media_name = node.prop("media.name").map(str::to_string);
 	let binary = node.prop("application.process.binary").map(str::to_string);
+	let process_id = node.prop("application.process.id").and_then(|v| v.parse::<u32>().ok());
 
 	let display_name = description
 		.clone()
@@ -610,6 +618,7 @@ fn to_shareable_node(node: &NodeRecord) -> ShareableNode {
 		description,
 		media_name,
 		binary,
+		process_id,
 		is_device: node.is_device(),
 	}
 }
@@ -634,43 +643,6 @@ fn remove_link(output_path: &str, input_path: &str) -> Result<()> {
 		}
 		Err(err) => Err(err),
 	}
-}
-
-fn parse_link_paths(direction: PortDirection) -> Result<HashMap<u32, String>> {
-	let flag = match direction {
-		PortDirection::Input => "-i",
-		PortDirection::Output => "-o",
-	};
-
-	let text = run_text("pw-link", &["-I", flag])?;
-	let mut paths = HashMap::new();
-
-	for raw_line in text.lines() {
-		let line = raw_line.trim();
-
-		if line.is_empty() {
-			continue;
-		}
-
-		let Some(split_at) = line.find(|c: char| c.is_whitespace()) else {
-			continue;
-		};
-
-		let id_text = line[..split_at].trim();
-		let rest = line[split_at..].trim();
-
-		let Ok(id) = id_text.parse::<u32>() else {
-			continue;
-		};
-
-		let path = rest.split(" [").next().unwrap_or(rest).trim();
-
-		if !path.is_empty() {
-			paths.insert(id, path.to_string());
-		}
-	}
-
-	Ok(paths)
 }
 
 fn fallback_port_path(node: &NodeRecord, port: &PortRecord) -> Option<String> {
