@@ -12,6 +12,8 @@ function createPatchbay() {
   return new AudioSharePatchbay({
     command: process.execPath,
     args: [helperScript],
+    sinkPrefix: 'custom-app-share',
+    sinkDescription: 'Custom App Screen Share',
   });
 }
 
@@ -24,7 +26,7 @@ test('hasPipeWire convenience function works', async () => {
   assert.equal(result, true);
 });
 
-test('client proxies helper responses', async () => {
+test('client proxies helper responses and applies custom configuration', async () => {
   const patchbay = createPatchbay();
 
   try {
@@ -39,9 +41,10 @@ test('client proxies helper responses', async () => {
     assert.equal(allNodes.length, 2);
 
     const ensured = await patchbay.ensureVirtualSink();
+
     assert.deepEqual(ensured, {
-      sinkName: 'test-sink',
-      monitorSource: 'test-sink.monitor',
+      sinkName: 'custom-app-share',
+      monitorSource: 'custom-app-share.monitor',
       nodeId: 999,
     });
 
@@ -59,8 +62,8 @@ test('helper errors reject requests', async () => {
 
   try {
     await assert.rejects(
-      patchbay.routeNodes([]),
-      /at least one node id is required/,
+        patchbay.routeNodes([]),
+        /at least one node id is required/,
     );
   } finally {
     await patchbay.dispose();

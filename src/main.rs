@@ -4,7 +4,7 @@ mod patchbay;
 use std::io::{self, BufRead, Write};
 
 use miniserde::{Deserialize, Serialize};
-use patchbay::{AudioSharePatchbay, has_pipewire};
+use patchbay::{has_pipewire, AudioSharePatchbay, PatchbayConfig};
 
 #[derive(Debug, Deserialize)]
 struct RequestEnvelope {
@@ -107,9 +107,37 @@ fn handle_request(out: &mut impl Write, patchbay: &mut AudioSharePatchbay, reque
 }
 
 fn main() -> io::Result<()> {
+	let mut config = PatchbayConfig::default();
+	let mut args = std::env::args().skip(1);
+
+	while let Some(arg) = args.next() {
+		match arg.as_str() {
+			"--sink-prefix" => {
+				if let Some(val) = args.next() {
+					config.sink_prefix = val;
+				}
+			}
+			"--sink-description" => {
+				if let Some(val) = args.next() {
+					config.sink_description = val;
+				}
+			}
+			"-h" | "--help" => {
+				println!("Usage: audio-share-helper [OPTIONS]");
+				println!("Options:");
+				println!("  --sink-prefix <PREFIX>          Set the virtual sink prefix");
+				println!("  --sink-description <DESC>       Set the virtual sink description (visible name)");
+				std::process::exit(0);
+			}
+			_ => {
+				logger::warn(&format!("[helper] unknown argument ignored: {arg}"));
+			}
+		}
+	}
+
 	let stdin = io::stdin();
 	let mut stdout = io::BufWriter::new(io::stdout().lock());
-	let mut patchbay = AudioSharePatchbay::new();
+	let mut patchbay = AudioSharePatchbay::new(config);
 
 	for line in stdin.lock().lines() {
 		let line = line?;

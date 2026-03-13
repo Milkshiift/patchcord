@@ -5,7 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::cmd::{create_link, remove_link, run_text};
-use super::ensure_pipewire;
+use super::{ensure_pipewire, PatchbayConfig};
 use super::error::{BackendError, Result};
 use super::models::{NodeRecord, Route, ShareableNode, VirtualSinkInfo};
 use super::routing::map_ports;
@@ -22,12 +22,12 @@ pub struct PatchbayState {
 }
 
 impl PatchbayState {
-	pub fn new() -> Self {
+	pub fn new(config: &PatchbayConfig) -> Self {
 		let unique = NEXT_SINK_ID.fetch_add(1, Ordering::Relaxed);
 
 		Self {
-			sink_name: format!("patchcord-screen-share-{}-{unique}", process::id()),
-			sink_description: "GoofCord Screen Share".to_string(),
+			sink_name: format!("{}-{}-{unique}", config.sink_prefix, process::id()),
+			sink_description: config.sink_description.clone(),
 			module_id: None,
 			routes: BTreeSet::new(),
 		}
@@ -386,6 +386,7 @@ fn quote_module_value(value: &str) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::patchbay::PatchbayConfig;
 
 	#[test]
 	fn test_quote_module_value() {
@@ -414,11 +415,12 @@ mod tests {
 			panic!("Cannot run integration test: PipeWire not detected. ({e})");
 		}
 
-		let mut state = PatchbayState::new();
+		let config = PatchbayConfig::default();
+		let mut state = PatchbayState::new(&config);
 
 		// 1. Create the virtual sink in the OS
 		let info = state.ensure_virtual_sink().expect("Failed to create virtual sink");
-		assert!(info.sink_name.starts_with("patchcord-screen-share-"));
+		assert!(info.sink_name.starts_with(&config.sink_prefix));
 		assert!(state.module_id.is_some(), "pactl module_id should be captured");
 
 		// 2. Fetch the live PipeWire graph and verify it exists
@@ -442,7 +444,7 @@ mod tests {
 			return; // Skip if no PipeWire
 		}
 
-		let state = PatchbayState::new();
+		let state = PatchbayState::new(&PatchbayConfig::default());
 
 		// Include devices so we are guaranteed to find *something* (like the hardware soundcard)
 		let nodes = state.list_shareable_nodes(true).expect("Failed to list nodes");

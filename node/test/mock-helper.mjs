@@ -2,9 +2,17 @@ import { createInterface } from 'node:readline';
 
 const rl = createInterface({ input: process.stdin });
 
+let sinkPrefix = 'test-sink';
+
+for (let i = 2; i < process.argv.length; i++) {
+  if (process.argv[i] === '--sink-prefix') {
+    sinkPrefix = process.argv[++i];
+  }
+}
+
 const sink = {
-  sinkName: 'test-sink',
-  monitorSource: 'test-sink.monitor',
+  sinkName: sinkPrefix,
+  monitorSource: `${sinkPrefix}.monitor`,
   nodeId: 999,
 };
 
@@ -58,8 +66,8 @@ rl.on('line', (line) => {
       send({
         id: request.id,
         result: request.includeDevices
-          ? nodes
-          : nodes.filter((node) => !node.isDevice),
+            ? nodes
+            : nodes.filter((node) => !node.isDevice),
       });
       break;
 
@@ -81,8 +89,8 @@ rl.on('line', (line) => {
 
     case 'dispose':
       process.stdout.write(
-        `${JSON.stringify({ id: request.id, result: null })}\n`,
-        () => process.exit(0),
+          `${JSON.stringify({ id: request.id, result: null })}\n`,
+          () => process.exit(0),
       );
       break;
 

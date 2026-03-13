@@ -16,7 +16,17 @@ export class AudioSharePatchbay {
         this.#requestTimeoutMs = sanitizeTimeout(options.requestTimeoutMs, 15_000);
         this.#shutdownTimeoutMs = sanitizeTimeout(options.shutdownTimeoutMs, 2_000);
 
-        this.#child = spawn(options.command, options.args ?? [], {
+        const args = [...(options.args ?? [])];
+
+        if (typeof options.sinkPrefix === 'string') {
+            args.push('--sink-prefix', options.sinkPrefix);
+        }
+
+        if (typeof options.sinkDescription === 'string') {
+            args.push('--sink-description', options.sinkDescription);
+        }
+
+        this.#child = spawn(options.command, args, {
             cwd: options.cwd,
             env: options.env,
             stdio: ['pipe', 'pipe', 'inherit'],

@@ -18,6 +18,21 @@ use state::PatchbayState;
 static PIPEWIRE_DETECTION_CACHE: OnceLock<Mutex<Option<(bool, Instant)>>> = OnceLock::new();
 const PIPEWIRE_DETECTION_CACHE_TTL: Duration = Duration::from_secs(2);
 
+#[derive(Debug, Clone)]
+pub struct PatchbayConfig {
+	pub sink_prefix: String,
+	pub sink_description: String,
+}
+
+impl Default for PatchbayConfig {
+	fn default() -> Self {
+		Self {
+			sink_prefix: "audio-share".to_string(),
+			sink_description: "Virtual Audio Share".to_string(),
+		}
+	}
+}
+
 pub fn has_pipewire() -> bool {
 	let cache = PIPEWIRE_DETECTION_CACHE.get_or_init(|| Mutex::new(None));
 
@@ -78,12 +93,12 @@ pub struct AudioSharePatchbay {
 
 impl Default for AudioSharePatchbay {
 	fn default() -> Self {
-		Self::new()
+		Self::new(PatchbayConfig::default())
 	}
 }
 
 impl AudioSharePatchbay {
-	pub fn new() -> Self {
+	pub fn new(config: PatchbayConfig) -> Self {
 		if has_pipewire() {
 			logger::info("[patchbay] ready");
 		} else {
@@ -91,7 +106,7 @@ impl AudioSharePatchbay {
 		}
 
 		Self {
-			state: PatchbayState::new(),
+			state: PatchbayState::new(&config),
 		}
 	}
 

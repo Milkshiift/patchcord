@@ -23,6 +23,8 @@ export interface AudioSharePatchbayOptions {
     env?: NodeJS.ProcessEnv;
     requestTimeoutMs?: number;
     shutdownTimeoutMs?: number;
+    sinkPrefix?: string;
+    sinkDescription?: string;
 }
 
 export declare class AudioSharePatchbay {
