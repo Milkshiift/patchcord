@@ -27,7 +27,7 @@ impl PatchbayState {
 
 		Self {
 			sink_name: format!("patchcord-screen-share-{}-{unique}", process::id()),
-			sink_description: "Vencord Screen Share".to_string(),
+			sink_description: "GoofCord Screen Share".to_string(),
 			module_id: None,
 			routes: BTreeSet::new(),
 		}
@@ -390,7 +390,7 @@ mod tests {
 	#[test]
 	fn test_quote_module_value() {
 		// Standard string
-		assert_eq!(quote_module_value("Vencord Share"), "\"Vencord Share\"");
+		assert_eq!(quote_module_value("GoofCord Share"), "\"GoofCord Share\"");
 
 		// String with quotes (should be escaped)
 		assert_eq!(quote_module_value("My \"App\""), "\"My \\\"App\\\"\"");
