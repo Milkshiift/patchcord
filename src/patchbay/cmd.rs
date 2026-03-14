@@ -97,7 +97,7 @@ fn join_reader(program: &'static str, stream_name: &str, handle: thread::JoinHan
 pub fn create_link(output_path: &str, input_path: &str) -> Result<()> {
 	logger::trace(&format!("[patchbay] linking {output_path} -> {input_path}"));
 
-	match run_text("pw-link", &[output_path, input_path]) {
+	match run_text("pw-link", &["-L", output_path, input_path]) {
 		Ok(_) => Ok(()),
 		Err(BackendError::CommandFailed(_, stderr)) if stderr.to_ascii_lowercase().contains("exists") => Ok(()),
 		Err(err) => Err(err),
