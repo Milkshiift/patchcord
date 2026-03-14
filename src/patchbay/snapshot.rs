@@ -1,4 +1,4 @@
-use miniserde::{json::Value, Deserialize};
+use miniserde::{Deserialize, json::Value};
 use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;

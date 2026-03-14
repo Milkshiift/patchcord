@@ -18,8 +18,14 @@ pub fn run_text(program: &'static str, args: &[&str]) -> Result<String> {
 		.spawn()
 		.map_err(|source| BackendError::Io(program, source))?;
 
-	let stdout = child.stdout.take().ok_or_else(|| BackendError::InvalidOutput(program, "stdout pipe was not captured".to_string()))?;
-	let stderr = child.stderr.take().ok_or_else(|| BackendError::InvalidOutput(program, "stderr pipe was not captured".to_string()))?;
+	let stdout = child
+		.stdout
+		.take()
+		.ok_or_else(|| BackendError::InvalidOutput(program, "stdout pipe was not captured".to_string()))?;
+	let stderr = child
+		.stderr
+		.take()
+		.ok_or_else(|| BackendError::InvalidOutput(program, "stderr pipe was not captured".to_string()))?;
 
 	let stdout_thread = thread::spawn(move || -> std::io::Result<Vec<u8>> {
 		let mut reader = stdout;
@@ -81,7 +87,10 @@ fn join_reader(program: &'static str, stream_name: &str, handle: thread::JoinHan
 	match handle.join() {
 		Ok(Ok(bytes)) => Ok(bytes),
 		Ok(Err(err)) => Err(BackendError::InvalidOutput(program, format!("failed to read {stream_name}: {err}"))),
-		Err(_) => Err(BackendError::InvalidOutput(program, format!("{stream_name} reader thread panicked"))),
+		Err(_) => Err(BackendError::InvalidOutput(
+			program,
+			format!("{stream_name} reader thread panicked"),
+		)),
 	}
 }
 
@@ -109,7 +118,6 @@ pub fn remove_link(output_path: &str, input_path: &str) -> Result<()> {
 		Err(err) => Err(err),
 	}
 }
-
 
 #[cfg(test)]
 mod tests {

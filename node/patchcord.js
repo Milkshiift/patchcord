@@ -26,6 +26,18 @@ export class AudioSharePatchbay {
             args.push('--sink-description', options.sinkDescription);
         }
 
+        if (options.virtualMic) {
+            args.push('--virtual-mic');
+        }
+
+        if (typeof options.virtualMicName === 'string') {
+            args.push('--virtual-mic-name', options.virtualMicName);
+        }
+
+        if (typeof options.virtualMicDescription === 'string') {
+            args.push('--virtual-mic-description', options.virtualMicDescription);
+        }
+
         this.#child = spawn(options.command, args, {
             cwd: options.cwd,
             env: options.env,

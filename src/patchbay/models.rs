@@ -21,6 +21,8 @@ pub struct VirtualSinkInfo {
 	pub sink_name: String,
 	pub monitor_source: String,
 	pub node_id: u32,
+	pub virtual_mic_name: Option<String>,
+	pub virtual_mic_description: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

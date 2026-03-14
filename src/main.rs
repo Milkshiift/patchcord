@@ -4,7 +4,7 @@ mod patchbay;
 use std::io::{self, BufRead, Write};
 
 use miniserde::{Deserialize, Serialize};
-use patchbay::{has_pipewire, AudioSharePatchbay, PatchbayConfig};
+use patchbay::{AudioSharePatchbay, PatchbayConfig, has_pipewire};
 
 #[derive(Debug, Deserialize)]
 struct RequestEnvelope {
@@ -122,11 +122,27 @@ fn main() -> io::Result<()> {
 					config.sink_description = val;
 				}
 			}
+			"--virtual-mic" => {
+				config.virtual_mic = true;
+			}
+			"--virtual-mic-name" => {
+				if let Some(val) = args.next() {
+					config.virtual_mic_name = Some(val);
+				}
+			}
+			"--virtual-mic-description" => {
+				if let Some(val) = args.next() {
+					config.virtual_mic_description = Some(val);
+				}
+			}
 			"-h" | "--help" => {
 				println!("Usage: audio-share-helper [OPTIONS]");
 				println!("Options:");
 				println!("  --sink-prefix <PREFIX>          Set the virtual sink prefix");
 				println!("  --sink-description <DESC>       Set the virtual sink description (visible name)");
+				println!("  --virtual-mic                   Automatically create a virtual microphone wrapper");
+				println!("  --virtual-mic-name <NAME>       Set the virtual microphone wrapper name");
+				println!("  --virtual-mic-description <DESC> Set the virtual microphone description (visible name)");
 				std::process::exit(0);
 			}
 			_ => {
@@ -137,7 +153,7 @@ fn main() -> io::Result<()> {
 
 	let stdin = io::stdin();
 	let mut stdout = io::BufWriter::new(io::stdout().lock());
-	let mut patchbay = AudioSharePatchbay::new(config);
+	let mut patchbay = AudioSharePatchbay::new(&config);
 
 	for line in stdin.lock().lines() {
 		let line = line?;

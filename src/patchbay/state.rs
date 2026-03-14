@@ -5,11 +5,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::cmd::{create_link, remove_link, run_text};
-use super::{ensure_pipewire, PatchbayConfig};
 use super::error::{BackendError, Result};
 use super::models::{NodeRecord, Route, ShareableNode, VirtualSinkInfo};
 use super::routing::map_ports;
 use super::snapshot::PipeWireSnapshot;
+use super::{PatchbayConfig, ensure_pipewire};
 use crate::logger;
 
 static NEXT_SINK_ID: AtomicU64 = AtomicU64::new(1);
@@ -19,17 +19,45 @@ pub struct PatchbayState {
 	sink_description: String,
 	module_id: Option<u32>,
 	routes: BTreeSet<Route>,
+
+	virtual_mic_name: Option<String>,
+	virtual_mic_description: Option<String>,
+	remap_module_id: Option<u32>,
 }
 
 impl PatchbayState {
 	pub fn new(config: &PatchbayConfig) -> Self {
 		let unique = NEXT_SINK_ID.fetch_add(1, Ordering::Relaxed);
 
+		let virtual_mic_name = if config.virtual_mic || config.virtual_mic_name.is_some() {
+			let base_name = config
+				.virtual_mic_name
+				.clone()
+				.unwrap_or_else(|| format!("{}-mic", config.sink_prefix));
+			Some(format!("{base_name}-{}-{unique}", process::id()))
+		} else {
+			None
+		};
+
+		let virtual_mic_description = if config.virtual_mic || config.virtual_mic_description.is_some() {
+			Some(
+				config
+					.virtual_mic_description
+					.clone()
+					.unwrap_or_else(|| format!("{} (Virtual Mic)", config.sink_description)),
+			)
+		} else {
+			None
+		};
+
 		Self {
 			sink_name: format!("{}-{}-{unique}", config.sink_prefix, process::id()),
 			sink_description: config.sink_description.clone(),
 			module_id: None,
 			routes: BTreeSet::new(),
+			virtual_mic_name,
+			virtual_mic_description,
+			remap_module_id: None,
 		}
 	}
 
@@ -65,59 +93,98 @@ impl PatchbayState {
 	pub fn ensure_virtual_sink(&mut self) -> Result<VirtualSinkInfo> {
 		ensure_pipewire()?;
 
-		if let Some(info) = self.virtual_sink_info()? {
-			return Ok(info);
-		}
+		let info = if let Some(info) = self.virtual_sink_info()? {
+			info
+		} else {
+			logger::info(&format!("[patchbay] creating virtual sink {}", self.sink_name));
 
-		logger::info(&format!("[patchbay] creating virtual sink {}", self.sink_name));
+			let sink_name_arg = format!("sink_name={}", self.sink_name);
+			let sink_properties_arg = format!(
+				"sink_properties=device.description={} node.description={} node.name={}",
+				quote_module_value(&self.sink_description),
+				quote_module_value(&self.sink_description),
+				quote_module_value(&self.sink_name),
+			);
 
-		let sink_name_arg = format!("sink_name={}", self.sink_name);
-		let sink_properties_arg = format!(
-			"sink_properties=device.description={} node.description={} node.name={}",
-			quote_module_value(&self.sink_description),
-			quote_module_value(&self.sink_description),
-			quote_module_value(&self.sink_name),
-		);
+			let module_id_text = run_text(
+				"pactl",
+				&[
+					"load-module",
+					"module-null-sink",
+					sink_name_arg.as_str(),
+					"channels=2",
+					"channel_map=front-left,front-right",
+					sink_properties_arg.as_str(),
+				],
+			)?;
 
-		let module_id_text = run_text(
-			"pactl",
-			&[
-				"load-module",
-				"module-null-sink",
-				sink_name_arg.as_str(),
-				"channels=2",
-				"channel_map=front-left,front-right",
-				sink_properties_arg.as_str(),
-			],
-		)?;
+			let module_id = module_id_text
+				.trim()
+				.parse::<u32>()
+				.map_err(|err| BackendError::InvalidOutput("pactl", format!("failed to parse module id: {err}")))?;
 
-		let module_id = module_id_text
-			.trim()
-			.parse::<u32>()
-			.map_err(|err| BackendError::InvalidOutput("pactl", format!("failed to parse module id: {err}")))?;
+			self.module_id = Some(module_id);
 
-		self.module_id = Some(module_id);
+			let ready_info;
+			let deadline = Instant::now() + Duration::from_secs(3);
 
-		let deadline = Instant::now() + Duration::from_secs(3);
-
-		loop {
-			match self.virtual_sink_info() {
-				Ok(Some(info)) => {
-					logger::info(&format!("[patchbay] virtual sink ready: {} ({})", info.sink_name, info.node_id));
-					return Ok(info);
+			loop {
+				match self.virtual_sink_info() {
+					Ok(Some(info)) => {
+						logger::info(&format!("[patchbay] virtual sink ready: {} ({})", info.sink_name, info.node_id));
+						ready_info = Some(info);
+						break;
+					}
+					Ok(None) => {}
+					Err(err) => {
+						logger::trace(&format!("[patchbay] transient error while waiting for sink: {err}"));
+					}
 				}
-				Ok(None) => {}
-				Err(err) => {
-					logger::trace(&format!("[patchbay] transient error while waiting for sink: {err}"));
+
+				if Instant::now() >= deadline {
+					return Err(BackendError::Timeout("virtual sink"));
 				}
+
+				thread::sleep(Duration::from_millis(50));
 			}
 
-			if Instant::now() >= deadline {
-				return Err(BackendError::Timeout("virtual sink"));
+			ready_info.unwrap()
+		};
+		
+		if self.remap_module_id.is_none()
+			&& let Some(mic_name) = &self.virtual_mic_name {
+				let mic_desc = self.virtual_mic_description.as_deref().unwrap_or("Virtual Microphone");
+				logger::info(&format!("[patchbay] creating virtual mic wrapper {mic_name}"));
+
+				let master_arg = format!("master={}", info.monitor_source);
+				let source_name_arg = format!("source_name={mic_name}");
+				let source_properties_arg = format!(
+					"source_properties=device.description={} node.description={} node.name={}",
+					quote_module_value(mic_desc),
+					quote_module_value(mic_desc),
+					quote_module_value(mic_name),
+				);
+
+				let module_id_text = run_text(
+					"pactl",
+					&[
+						"load-module",
+						"module-remap-source",
+						master_arg.as_str(),
+						source_name_arg.as_str(),
+						source_properties_arg.as_str(),
+					],
+				)?;
+
+				let module_id = module_id_text
+					.trim()
+					.parse::<u32>()
+					.map_err(|err| BackendError::InvalidOutput("pactl", format!("failed to parse remap module id: {err}")))?;
+
+				self.remap_module_id = Some(module_id);
 			}
 
-			thread::sleep(Duration::from_millis(50));
-		}
+		Ok(info)
 	}
 
 	pub fn route_nodes(&mut self, node_ids: Vec<u32>) -> Result<VirtualSinkInfo> {
@@ -171,8 +238,12 @@ impl PatchbayState {
 			}
 
 			for (output, input) in map_ports(&outputs, &sink_inputs) {
-				let Some(output_path) = output.path.as_deref() else { continue; };
-				let Some(input_path) = input.path.as_deref() else { continue; };
+				let Some(output_path) = output.path.as_deref() else {
+					continue;
+				};
+				let Some(input_path) = input.path.as_deref() else {
+					continue;
+				};
 
 				desired_routes.insert(Route {
 					output_path: output_path.to_string(),
@@ -195,7 +266,10 @@ impl PatchbayState {
 					newly_created.insert(route.clone());
 				}
 				Err(err) => {
-					logger::warn(&format!("[patchbay] failed to link {} -> {}: {err}", route.output_path, route.input_path));
+					logger::warn(&format!(
+						"[patchbay] failed to link {} -> {}: {err}",
+						route.output_path, route.input_path
+					));
 				}
 			}
 		}
@@ -203,7 +277,10 @@ impl PatchbayState {
 		if active_routes.is_empty() {
 			for route in newly_created {
 				if let Err(err) = remove_link(&route.output_path, &route.input_path) {
-					logger::warn(&format!("[patchbay] failed to roll back {} -> {}: {err}", route.output_path, route.input_path));
+					logger::warn(&format!(
+						"[patchbay] failed to roll back {} -> {}: {err}",
+						route.output_path, route.input_path
+					));
 				}
 			}
 			return Err(BackendError::Message("none of the selected nodes could be linked".to_string()));
@@ -215,7 +292,10 @@ impl PatchbayState {
 			match remove_link(&route.output_path, &route.input_path) {
 				Ok(()) => {}
 				Err(err) => {
-					logger::warn(&format!("[patchbay] failed to remove stale link {} -> {}: {err}", route.output_path, route.input_path));
+					logger::warn(&format!(
+						"[patchbay] failed to remove stale link {} -> {}: {err}",
+						route.output_path, route.input_path
+					));
 					retained_stale.insert(route.clone());
 				}
 			}
@@ -241,7 +321,10 @@ impl PatchbayState {
 				Ok(()) => {}
 				Err(err) => {
 					failures += 1;
-					logger::warn(&format!("[patchbay] failed to remove link {} -> {}: {err}", route.output_path, route.input_path));
+					logger::warn(&format!(
+						"[patchbay] failed to remove link {} -> {}: {err}",
+						route.output_path, route.input_path
+					));
 					failed.insert(route);
 				}
 			}
@@ -252,7 +335,9 @@ impl PatchbayState {
 		if failures == 0 {
 			Ok(())
 		} else {
-			Err(BackendError::Message(format!("failed to remove {failures} route(s); cleanup will be retried later")))
+			Err(BackendError::Message(format!(
+				"failed to remove {failures} route(s); cleanup will be retried later"
+			)))
 		}
 	}
 
@@ -263,9 +348,23 @@ impl PatchbayState {
 			errors.push(err.to_string());
 		}
 
+		// Cleanup Virtual Mic first (dependency of the master sink)
+		if let Some(module_id) = self.remap_module_id {
+			let module_id_text = module_id.to_string();
+			match run_text("pactl", &["unload-module", module_id_text.as_str()]) {
+				Ok(_) => {
+					self.remap_module_id = None;
+				}
+				Err(err) => {
+					logger::warn(&format!("[patchbay] failed to unload virtual mic module {module_id}: {err}"));
+					errors.push(format!("failed to unload virtual mic module {module_id}: {err}"));
+				}
+			}
+		}
+
+		// Cleanup Virtual Sink
 		if let Some(module_id) = self.module_id {
 			let module_id_text = module_id.to_string();
-
 			match run_text("pactl", &["unload-module", module_id_text.as_str()]) {
 				Ok(_) => {
 					self.module_id = None;
@@ -298,6 +397,8 @@ impl PatchbayState {
 			sink_name: self.sink_name.clone(),
 			monitor_source: self.monitor_source_name(),
 			node_id: node.id,
+			virtual_mic_name: self.virtual_mic_name.clone(),
+			virtual_mic_description: self.virtual_mic_description.clone(),
 		}))
 	}
 
@@ -319,8 +420,16 @@ impl PatchbayState {
 			|| node.matches_prop("node.nick", &monitor_name)
 	}
 
+	fn is_our_virtual_mic_node(&self, node: &NodeRecord) -> bool {
+		let Some(mic_name) = &self.virtual_mic_name else {
+			return false;
+		};
+
+		node.matches_prop("node.name", mic_name) || node.matches_prop("device.name", mic_name) || node.matches_prop("node.nick", mic_name)
+	}
+
 	fn is_our_virtual_audio_object(&self, node: &NodeRecord) -> bool {
-		self.is_our_virtual_sink_node(node) || self.is_our_monitor_node(node)
+		self.is_our_virtual_sink_node(node) || self.is_our_monitor_node(node) || self.is_our_virtual_mic_node(node)
 	}
 }
 
@@ -381,8 +490,6 @@ fn quote_module_value(value: &str) -> String {
 	format!("\"{escaped}\"")
 }
 
-
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -434,7 +541,10 @@ mod tests {
 		// 4. Fetch the live graph again and verify it's gone
 		let snapshot_after = PipeWireSnapshot::collect().expect("Failed to collect snapshot");
 		let found_after = snapshot_after.find_virtual_sink(&info.sink_name, &state.sink_description);
-		assert!(found_after.is_none(), "Virtual sink should be removed from the system after dispose");
+		assert!(
+			found_after.is_none(),
+			"Virtual sink should be removed from the system after dispose"
+		);
 	}
 
 	#[test]
@@ -449,7 +559,10 @@ mod tests {
 		// Include devices so we are guaranteed to find *something* (like the hardware soundcard)
 		let nodes = state.list_shareable_nodes(true).expect("Failed to list nodes");
 
-		assert!(!nodes.is_empty(), "Expected to find at least one shareable device/app on the system");
+		assert!(
+			!nodes.is_empty(),
+			"Expected to find at least one shareable device/app on the system"
+		);
 
 		// Print them out so you can manually inspect the output when testing
 		for node in nodes.iter().take(3) {

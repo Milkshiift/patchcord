@@ -14,6 +14,8 @@ export interface VirtualSinkInfo {
     sinkName: string;
     monitorSource: string;
     nodeId: number;
+    virtualMicName?: string | null;
+    virtualMicDescription?: string | null;
 }
 
 export interface AudioSharePatchbayOptions {
@@ -25,6 +27,9 @@ export interface AudioSharePatchbayOptions {
     shutdownTimeoutMs?: number;
     sinkPrefix?: string;
     sinkDescription?: string;
+    virtualMic?: boolean;
+    virtualMicName?: string;
+    virtualMicDescription?: string;
 }
 
 export declare class AudioSharePatchbay {

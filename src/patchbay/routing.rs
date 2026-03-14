@@ -95,11 +95,10 @@ pub fn map_ports(outputs: &[PortRecord], inputs: &[PortRecord]) -> Vec<(PortReco
 	mapped
 }
 
-
 #[cfg(test)]
 mod tests {
-	use crate::patchbay::models::PortDirection;
 	use super::*;
+	use crate::patchbay::models::PortDirection;
 
 	#[test]
 	fn test_channel_role_parsing() {
@@ -132,7 +131,7 @@ mod tests {
 		let inputs = vec![in_l.clone(), in_r.clone()];
 
 		let mapped = map_ports(&outputs, &inputs);
-		
+
 		assert_eq!(mapped.len(), 2);
 		assert_eq!(mapped[0].0.path, out_l.path);
 		assert_eq!(mapped[0].1.path, in_l.path);

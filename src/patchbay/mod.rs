@@ -22,6 +22,9 @@ const PIPEWIRE_DETECTION_CACHE_TTL: Duration = Duration::from_secs(2);
 pub struct PatchbayConfig {
 	pub sink_prefix: String,
 	pub sink_description: String,
+	pub virtual_mic: bool,
+	pub virtual_mic_name: Option<String>,
+	pub virtual_mic_description: Option<String>,
 }
 
 impl Default for PatchbayConfig {
@@ -29,6 +32,9 @@ impl Default for PatchbayConfig {
 		Self {
 			sink_prefix: "audio-share".to_string(),
 			sink_description: "Virtual Audio Share".to_string(),
+			virtual_mic: false,
+			virtual_mic_name: None,
+			virtual_mic_description: None,
 		}
 	}
 }
@@ -38,11 +44,10 @@ pub fn has_pipewire() -> bool {
 
 	{
 		let cached = *lock_unpoisoned(cache);
-		if let Some((value, checked_at)) = cached {
-			if checked_at.elapsed() < PIPEWIRE_DETECTION_CACHE_TTL {
+		if let Some((value, checked_at)) = cached
+			&& checked_at.elapsed() < PIPEWIRE_DETECTION_CACHE_TTL {
 				return value;
 			}
-		}
 	}
 
 	let value = match detect_pipewire() {
@@ -58,11 +63,7 @@ pub fn has_pipewire() -> bool {
 }
 
 pub fn ensure_pipewire() -> Result<()> {
-	if has_pipewire() {
-		Ok(())
-	} else {
-		Err(BackendError::Unsupported)
-	}
+	if has_pipewire() { Ok(()) } else { Err(BackendError::Unsupported) }
 }
 
 fn detect_pipewire() -> Result<bool> {
@@ -93,12 +94,12 @@ pub struct AudioSharePatchbay {
 
 impl Default for AudioSharePatchbay {
 	fn default() -> Self {
-		Self::new(PatchbayConfig::default())
+		Self::new(&PatchbayConfig::default())
 	}
 }
 
 impl AudioSharePatchbay {
-	pub fn new(config: PatchbayConfig) -> Self {
+	pub fn new(config: &PatchbayConfig) -> Self {
 		if has_pipewire() {
 			logger::info("[patchbay] ready");
 		} else {
@@ -106,7 +107,7 @@ impl AudioSharePatchbay {
 		}
 
 		Self {
-			state: PatchbayState::new(&config),
+			state: PatchbayState::new(config),
 		}
 	}
 
