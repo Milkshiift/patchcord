@@ -13,6 +13,7 @@ pub fn run_text(program: &'static str, args: &[&str]) -> Result<String> {
 		.args(args)
 		.env("LC_ALL", "C")
 		.env("LANG", "C")
+		.stdin(Stdio::null())
 		.stdout(Stdio::piped())
 		.stderr(Stdio::piped())
 		.spawn()
