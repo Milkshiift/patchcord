@@ -194,15 +194,16 @@ fn spawn_pw_mon_thread(tx: mpsc::Sender<IncomingMessage>) {
 
 		if let Some(child_stdout) = child.stdout.take() {
 			let reader = io::BufReader::new(child_stdout);
+			let mut last_trigger = std::time::Instant::now() - std::time::Duration::from_secs(1);
 
 			for line in reader.lines() {
 				let Ok(text) = line else { break };
 
-				if text.contains("PipeWire:Interface:Node")
-					|| text.contains("PipeWire:Interface:Port")
-					|| text.contains("PipeWire:Interface:Link")
-				{
-					let _ = tx.send(IncomingMessage::GraphChanged);
+				if text.contains("PipeWire:Interface:Node") || text.contains("PipeWire:Interface:Port") {
+					if last_trigger.elapsed() > std::time::Duration::from_millis(400) {
+						let _ = tx.send(IncomingMessage::GraphChanged);
+						last_trigger = std::time::Instant::now();
+					}
 				}
 			}
 		}
