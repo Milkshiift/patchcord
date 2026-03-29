@@ -1,5 +1,6 @@
 use miniserde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use miniserde::json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -60,17 +61,28 @@ pub struct PortRecord {
 #[derive(Debug, Clone)]
 pub struct NodeRecord {
 	pub id: u32,
-	pub props: HashMap<String, String>,
+	pub props: HashMap<String, Value>,
 	pub ports: Vec<PortRecord>,
 }
 
 impl NodeRecord {
-	pub fn prop(&self, key: &str) -> Option<&str> {
-		self.props.get(key).map(String::as_str)
+	pub fn prop_str(&self, key: &str) -> Option<&str> {
+		match self.props.get(key) {
+			Some(Value::String(s)) => Some(s.as_str()),
+			_ => None,
+		}
+	}
+
+	pub fn prop_num(&self, key: &str) -> Option<u32> {
+		match self.props.get(key) {
+			Some(Value::Number(n)) => n.to_string().parse().ok(),
+			Some(Value::String(s)) => s.parse().ok(),
+			_ => None,
+		}
 	}
 
 	pub fn matches_prop(&self, key: &str, expected: &str) -> bool {
-		self.prop(key) == Some(expected)
+		self.prop_str(key) == Some(expected)
 	}
 
 	pub fn output_ports(&self) -> impl Iterator<Item = &PortRecord> {
@@ -82,10 +94,10 @@ impl NodeRecord {
 	}
 
 	pub fn is_device(&self) -> bool {
-		let has_device_id = self.prop("device.id").is_some_and(|value| !value.is_empty());
+		let has_device_id = self.prop_str("device.id").is_some_and(|value| !value.is_empty());
 
 		let is_audio_device = self
-			.prop("media.class")
+			.prop_str("media.class")
 			.is_some_and(|class| class.starts_with("Audio/Sink") || class.starts_with("Audio/Source"));
 
 		has_device_id || is_audio_device

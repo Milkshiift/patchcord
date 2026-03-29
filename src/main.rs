@@ -180,7 +180,6 @@ fn spawn_stdin_thread(tx: mpsc::Sender<IncomingMessage>) {
 }
 
 fn spawn_pw_mon_thread(tx: mpsc::Sender<IncomingMessage>) {
-	// Thread 2: Run `pw-mon` to detect audio graph changes
 	thread::spawn(move || {
 		let Ok(mut child) = Command::new("pw-mon")
 			.env("LC_ALL", "C")
@@ -195,16 +194,20 @@ fn spawn_pw_mon_thread(tx: mpsc::Sender<IncomingMessage>) {
 
 		if let Some(child_stdout) = child.stdout.take() {
 			let reader = io::BufReader::new(child_stdout);
+			let mut last_trigger = std::time::Instant::now() - std::time::Duration::from_secs(1);
+
 			for line in reader.lines() {
 				let Ok(text) = line else { break };
 
 				if text.contains("PipeWire:Interface:Node") || text.contains("PipeWire:Interface:Port") {
-					let _ = tx.send(IncomingMessage::GraphChanged);
+					if last_trigger.elapsed() > std::time::Duration::from_millis(400) {
+						let _ = tx.send(IncomingMessage::GraphChanged);
+						last_trigger = std::time::Instant::now();
+					}
 				}
 			}
 		}
 
-		// If we reach here, the process died or stdout closed
 		let _ = child.wait();
 		let _ = tx.send(IncomingMessage::MonitorDied);
 	});

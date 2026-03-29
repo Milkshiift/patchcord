@@ -1,3 +1,7 @@
+use std::sync::OnceLock;
+
+static TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
+
 pub fn error(message: &str) {
 	eprintln!("[ERROR] {message}");
 }
@@ -12,13 +16,11 @@ pub fn info(message: &str) {
 
 pub fn debug(message: &str) {
 	eprintln!("[DEBUG] {message}");
-	// if std::env::var_os("PATCHCORD_DEBUG").is_some() {
-	// 	eprintln!("[DEBUG] {message}");
-	// }
 }
 
 pub fn trace(message: &str) {
-	if std::env::var_os("PATCHCORD_TRACE").is_some() {
+	let enabled = *TRACE_ENABLED.get_or_init(|| std::env::var_os("PATCHCORD_TRACE").is_some());
+	if enabled {
 		eprintln!("[TRACE] {message}");
 	}
 }

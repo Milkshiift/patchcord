@@ -71,26 +71,12 @@ impl PipeWireSnapshot {
 		for object in objects {
 			match object.kind.as_str() {
 				NODE_TYPE => {
-					let props = object
-						.info
-						.props
-						.into_iter()
-						.filter_map(|(k, v)| {
-							let s = match v {
-								Value::String(s) => s,
-								Value::Number(n) => n.to_string(),
-								Value::Bool(b) => b.to_string(),
-								_ => return None,
-							};
-							Some((k, s))
-						})
-						.collect();
-
+					// No longer allocating strings for every property, massive speedup
 					nodes.insert(
 						object.id,
 						NodeRecord {
 							id: object.id,
-							props,
+							props: object.info.props,
 							ports: Vec::new(),
 						},
 					);
@@ -162,7 +148,7 @@ impl PipeWireSnapshot {
 }
 
 fn fallback_port_path(node: &NodeRecord, port: &PortRecord) -> Option<String> {
-	let node_name = node.prop("node.name")?;
+	let node_name = node.prop_str("node.name")?;
 	let port_name = port.port_name.as_deref().or(port.object_path.as_deref())?;
 
 	Some(format!("{node_name}:{port_name}"))

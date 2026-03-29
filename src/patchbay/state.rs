@@ -27,6 +27,9 @@ pub struct PatchbayState {
 
 impl PatchbayState {
 	pub fn new(config: &PatchbayConfig) -> Self {
+		// Clean up any left-over pactl modules from previous hard crashes
+		clean_orphaned_modules(&config.sink_prefix);
+
 		let unique = NEXT_SINK_ID.fetch_add(1, Ordering::Relaxed);
 
 		let virtual_mic_name = if config.virtual_mic || config.virtual_mic_name.is_some() {
@@ -72,8 +75,8 @@ impl PatchbayState {
 			.filter(|node| !self.is_our_virtual_audio_object(node))
 			.filter(|node| node.output_ports().any(|port| port.path.is_some()))
 			.filter(|node| {
-				let is_app = node.prop("application.name").is_some_and(|v| !v.is_empty())
-					|| node.prop("application.process.binary").is_some_and(|v| !v.is_empty());
+				let is_app = node.prop_str("application.name").is_some_and(|v| !v.is_empty())
+					|| node.prop_str("application.process.binary").is_some_and(|v| !v.is_empty());
 
 				if node.is_device() { include_devices } else { is_app }
 			})
@@ -145,7 +148,8 @@ impl PatchbayState {
 					return Err(BackendError::Timeout("virtual sink"));
 				}
 
-				thread::sleep(Duration::from_millis(50));
+				// Increased to 200ms to prevent heavy CPU spikes during the pw-dump wait loop
+				thread::sleep(Duration::from_millis(200));
 			}
 
 			ready_info.unwrap()
@@ -189,8 +193,10 @@ impl PatchbayState {
 	}
 
 	pub fn route_nodes(&mut self, node_ids: Vec<u32>) -> Result<VirtualSinkInfo> {
+		// FIXED: Gracefully handle empty arrays to clear routes instead of throwing an error
 		if node_ids.is_empty() {
-			return Err(BackendError::Message("at least one node id is required".to_string()));
+			self.clear_routes()?;
+			return self.ensure_virtual_sink();
 		}
 
 		let sink_info = self.ensure_virtual_sink()?;
@@ -456,15 +462,15 @@ fn dedupe_node_ids(node_ids: Vec<u32>) -> Vec<u32> {
 }
 
 fn to_shareable_node(node: &NodeRecord) -> ShareableNode {
-	let application_name = node.prop("application.name").map(str::to_string);
-	let node_name = node.prop("node.name").map(str::to_string);
+	let application_name = node.prop_str("application.name").map(str::to_string);
+	let node_name = node.prop_str("node.name").map(str::to_string);
 	let description = node
-		.prop("node.description")
-		.or_else(|| node.prop("device.description"))
+		.prop_str("node.description")
+		.or_else(|| node.prop_str("device.description"))
 		.map(str::to_string);
-	let media_name = node.prop("media.name").map(str::to_string);
-	let binary = node.prop("application.process.binary").map(str::to_string);
-	let process_id = node.prop("application.process.id").and_then(|v| v.parse::<u32>().ok());
+	let media_name = node.prop_str("media.name").map(str::to_string);
+	let binary = node.prop_str("application.process.binary").map(str::to_string);
+	let process_id = node.prop_num("application.process.id");
 
 	let display_name = description
 		.clone()
@@ -483,6 +489,18 @@ fn to_shareable_node(node: &NodeRecord) -> ShareableNode {
 		binary,
 		process_id,
 		is_device: node.is_device(),
+	}
+}
+
+fn clean_orphaned_modules(prefix: &str) {
+	if let Ok(output) = run_text("pactl", &["list", "short", "modules"]) {
+		for line in output.lines() {
+			if line.contains(prefix) {
+				if let Some(id_str) = line.split_whitespace().next() {
+					let _ = run_text("pactl", &["unload-module", id_str]);
+				}
+			}
+		}
 	}
 }
 
@@ -518,7 +536,6 @@ mod tests {
 	#[test]
 	#[ignore = "Requires a live PipeWire/PulseAudio session"]
 	fn test_integration_virtual_sink_lifecycle() {
-		// Ensure PipeWire is actually running before we test
 		if let Err(e) = super::super::ensure_pipewire() {
 			panic!("Cannot run integration test: PipeWire not detected. ({e})");
 		}
@@ -526,20 +543,16 @@ mod tests {
 		let config = PatchbayConfig::default();
 		let mut state = PatchbayState::new(&config);
 
-		// 1. Create the virtual sink in the OS
 		let info = state.ensure_virtual_sink().expect("Failed to create virtual sink");
 		assert!(info.sink_name.starts_with(&config.sink_prefix));
 		assert!(state.module_id.is_some(), "pactl module_id should be captured");
 
-		// 2. Fetch the live PipeWire graph and verify it exists
 		let snapshot = PipeWireSnapshot::collect().expect("Failed to collect snapshot");
 		let found_node = snapshot.find_virtual_sink(&info.sink_name, &state.sink_description);
 		assert!(found_node.is_some(), "Virtual sink was created via pactl but not found in pw-dump!");
 
-		// 3. Trigger cleanup
 		state.dispose().expect("Failed to dispose virtual sink");
 
-		// 4. Fetch the live graph again and verify it's gone
 		let snapshot_after = PipeWireSnapshot::collect().expect("Failed to collect snapshot");
 		let found_after = snapshot_after.find_virtual_sink(&info.sink_name, &state.sink_description);
 		assert!(
@@ -552,12 +565,10 @@ mod tests {
 	#[ignore = "Requires a live PipeWire session with at least one audio device"]
 	fn test_integration_list_nodes() {
 		if super::super::ensure_pipewire().is_err() {
-			return; // Skip if no PipeWire
+			return;
 		}
 
 		let state = PatchbayState::new(&PatchbayConfig::default());
-
-		// Include devices so we are guaranteed to find *something* (like the hardware soundcard)
 		let nodes = state.list_shareable_nodes(true).expect("Failed to list nodes");
 
 		assert!(
@@ -565,7 +576,6 @@ mod tests {
 			"Expected to find at least one shareable device/app on the system"
 		);
 
-		// Print them out so you can manually inspect the output when testing
 		for node in nodes.iter().take(3) {
 			println!("Found node: {} (ID: {})", node.display_name, node.id);
 		}
