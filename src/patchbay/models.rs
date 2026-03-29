@@ -50,6 +50,7 @@ pub struct Route {
 
 #[derive(Debug, Clone)]
 pub struct PortRecord {
+	pub id: u32,
 	pub direction: PortDirection,
 	pub channel: Option<String>,
 	pub port_index: Option<String>,

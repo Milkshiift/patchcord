@@ -71,7 +71,6 @@ impl PipeWireSnapshot {
 		for object in objects {
 			match object.kind.as_str() {
 				NODE_TYPE => {
-					// No longer allocating strings for every property, massive speedup
 					nodes.insert(
 						object.id,
 						NodeRecord {
@@ -108,6 +107,7 @@ impl PipeWireSnapshot {
 					pending_ports.push((
 						node_id,
 						PortRecord {
+							id: object.id,
 							direction,
 							channel: get_str("audio.channel"),
 							port_index: get_str("port.id").or_else(|| get_str("port.index")),
@@ -123,7 +123,7 @@ impl PipeWireSnapshot {
 
 		for (node_id, mut port) in pending_ports {
 			if let Some(node) = nodes.get_mut(&node_id) {
-				port.path = fallback_port_path(node, &port);
+				port.path = Some(port.id.to_string());
 				node.ports.push(port);
 			}
 		}
@@ -145,11 +145,4 @@ impl PipeWireSnapshot {
 				})
 			})
 	}
-}
-
-fn fallback_port_path(node: &NodeRecord, port: &PortRecord) -> Option<String> {
-	let node_name = node.prop_str("node.name")?;
-	let port_name = port.port_name.as_deref().or(port.object_path.as_deref())?;
-
-	Some(format!("{node_name}:{port_name}"))
 }

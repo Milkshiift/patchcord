@@ -111,8 +111,9 @@ mod tests {
 
 	#[test]
 	fn test_map_ports() {
-		fn make_port(channel: &str, path: &str) -> PortRecord {
+		fn make_port(id: u32, channel: &str, path: &str) -> PortRecord {
 			PortRecord {
+				id,
 				direction: PortDirection::Output,
 				channel: Some(channel.to_string()),
 				port_index: None,
@@ -122,10 +123,10 @@ mod tests {
 			}
 		}
 
-		let out_l = make_port("FL", "app:out_FL");
-		let out_r = make_port("FR", "app:out_FR");
-		let in_l = make_port("FL", "sink:in_FL");
-		let in_r = make_port("FR", "sink:in_FR");
+		let out_l = make_port(1, "FL", "1");
+		let out_r = make_port(2, "FR", "2");
+		let in_l = make_port(3, "FL", "3");
+		let in_r = make_port(4, "FR", "4");
 
 		let outputs = vec![out_l.clone(), out_r.clone()];
 		let inputs = vec![in_l.clone(), in_r.clone()];

@@ -193,7 +193,6 @@ impl PatchbayState {
 	}
 
 	pub fn route_nodes(&mut self, node_ids: Vec<u32>) -> Result<VirtualSinkInfo> {
-		// FIXED: Gracefully handle empty arrays to clear routes instead of throwing an error
 		if node_ids.is_empty() {
 			self.clear_routes()?;
 			return self.ensure_virtual_sink();
