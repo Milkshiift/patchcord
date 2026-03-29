@@ -263,14 +263,13 @@ impl PatchbayState {
 			return Err(BackendError::Message("none of the selected nodes could be linked".to_string()));
 		}
 
-		let mut active_routes = previous_routes.intersection(&desired_routes).cloned().collect::<BTreeSet<_>>();
-		let mut newly_created = BTreeSet::<Route>::new();
+		let mut active_routes = BTreeSet::new();
 
-		for route in desired_routes.difference(&previous_routes) {
+		// ALWAYS assert desired links. Wireplumber might have destroyed them while the stream was paused or suspended.
+		for route in &desired_routes {
 			match create_link(&route.output_path, &route.input_path) {
 				Ok(()) => {
 					active_routes.insert(route.clone());
-					newly_created.insert(route.clone());
 				}
 				Err(err) => {
 					logger::warn(&format!(
@@ -282,19 +281,11 @@ impl PatchbayState {
 		}
 
 		if active_routes.is_empty() {
-			for route in newly_created {
-				if let Err(err) = remove_link(&route.output_path, &route.input_path) {
-					logger::warn(&format!(
-						"[patchbay] failed to roll back {} -> {}: {err}",
-						route.output_path, route.input_path
-					));
-				}
-			}
 			return Err(BackendError::Message("none of the selected nodes could be linked".to_string()));
 		}
 
 		let mut retained_stale = BTreeSet::<Route>::new();
-
+		
 		for route in previous_routes.difference(&desired_routes) {
 			match remove_link(&route.output_path, &route.input_path) {
 				Ok(()) => {}
