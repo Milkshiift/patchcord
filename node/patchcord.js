@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { EventEmitter } from 'node:events';
 
-export class AudioSharePatchbay {
+export class AudioSharePatchbay extends EventEmitter {
     #child;
     #lines;
     #closed = false;
@@ -13,6 +14,8 @@ export class AudioSharePatchbay {
     #shutdownTimeoutMs;
 
     constructor(options) {
+        super(); // Initialize the EventEmitter
+
         this.#requestTimeoutMs = sanitizeTimeout(options.requestTimeoutMs, 15_000);
         this.#shutdownTimeoutMs = sanitizeTimeout(options.shutdownTimeoutMs, 2_000);
 
@@ -87,6 +90,11 @@ export class AudioSharePatchbay {
         try {
             message = JSON.parse(line);
         } catch {
+            return;
+        }
+
+        if (typeof message.event === 'string') {
+            this.emit(message.event, message.data);
             return;
         }
 

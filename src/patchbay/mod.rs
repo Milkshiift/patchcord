@@ -45,9 +45,10 @@ pub fn has_pipewire() -> bool {
 	{
 		let cached = *lock_unpoisoned(cache);
 		if let Some((value, checked_at)) = cached
-			&& checked_at.elapsed() < PIPEWIRE_DETECTION_CACHE_TTL {
-				return value;
-			}
+			&& checked_at.elapsed() < PIPEWIRE_DETECTION_CACHE_TTL
+		{
+			return value;
+		}
 	}
 
 	let value = match detect_pipewire() {

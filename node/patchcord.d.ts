@@ -1,3 +1,5 @@
+import { EventEmitter } from "node:events";
+
 export interface ShareableNode {
     id: number;
     displayName: string;
@@ -32,7 +34,7 @@ export interface AudioSharePatchbayOptions {
     virtualMicDescription?: string;
 }
 
-export declare class AudioSharePatchbay {
+export declare class AudioSharePatchbay extends EventEmitter {
     constructor(options: AudioSharePatchbayOptions);
     hasPipeWire(): Promise<boolean>;
     listShareableNodes(includeDevices?: boolean): Promise<ShareableNode[]>;
@@ -40,6 +42,16 @@ export declare class AudioSharePatchbay {
     routeNodes(nodeIds: number[]): Promise<VirtualSinkInfo>;
     clearRoutes(): Promise<void>;
     dispose(): Promise<void>;
+
+    on(eventName: 'graphChanged' | 'monitorDied', listener: () => void): this;
+    once(eventName: 'graphChanged' | 'monitorDied', listener: () => void): this;
+    off(eventName: 'graphChanged' | 'monitorDied', listener: () => void): this;
+    emit(eventName: 'graphChanged' | 'monitorDied'): boolean;
+
+    on(eventName: string | symbol, listener: (...args: any[]) => void): this;
+    once(eventName: string | symbol, listener: (...args: any[]) => void): this;
+    off(eventName: string | symbol, listener: (...args: any[]) => void): this;
+    emit(eventName: string | symbol, ...args: any[]): boolean;
 }
 
 export declare function hasPipeWire(

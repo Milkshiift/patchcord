@@ -2,6 +2,9 @@ mod logger;
 mod patchbay;
 
 use std::io::{self, BufRead, Write};
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
 
 use miniserde::{Deserialize, Serialize};
 use patchbay::{AudioSharePatchbay, PatchbayConfig, has_pipewire};
@@ -52,6 +55,17 @@ struct SuccessResponse<T> {
 struct ErrorResponse {
 	id: u64,
 	error: String,
+}
+
+#[derive(Serialize)]
+struct EventMessage {
+	event: &'static str,
+}
+
+enum IncomingMessage {
+	Request(String),
+	GraphChanged,
+	MonitorDied,
 }
 
 fn write_json_line<T: Serialize>(out: &mut impl Write, value: &T) -> io::Result<()> {
@@ -106,7 +120,7 @@ fn handle_request(out: &mut impl Write, patchbay: &mut AudioSharePatchbay, reque
 	Ok(true)
 }
 
-fn main() -> io::Result<()> {
+fn parse_args() -> PatchbayConfig {
 	let mut config = PatchbayConfig::default();
 	let mut args = std::env::args().skip(1);
 
@@ -137,12 +151,6 @@ fn main() -> io::Result<()> {
 			}
 			"-h" | "--help" => {
 				println!("Usage: audio-share-helper [OPTIONS]");
-				println!("Options:");
-				println!("  --sink-prefix <PREFIX>          Set the virtual sink prefix");
-				println!("  --sink-description <DESC>       Set the virtual sink description (visible name)");
-				println!("  --virtual-mic                   Automatically create a virtual microphone wrapper");
-				println!("  --virtual-mic-name <NAME>       Set the virtual microphone wrapper name");
-				println!("  --virtual-mic-description <DESC> Set the virtual microphone description (visible name)");
 				std::process::exit(0);
 			}
 			_ => {
@@ -151,39 +159,101 @@ fn main() -> io::Result<()> {
 		}
 	}
 
-	let stdin = io::stdin();
-	let mut stdout = io::BufWriter::new(io::stdout().lock());
-	let mut patchbay = AudioSharePatchbay::new(&config);
+	config
+}
 
-	for line in stdin.lock().lines() {
-		let line = line?;
+fn spawn_stdin_thread(tx: mpsc::Sender<IncomingMessage>) {
+	// Thread 1: Read JSON requests from Node.js
+	thread::spawn(move || {
+		let stdin = io::stdin();
+		for line in stdin.lock().lines() {
+			let Ok(line) = line else { break };
 
-		if line.trim().is_empty() {
-			continue;
-		}
-
-		let request_id = miniserde::json::from_str::<RequestEnvelope>(&line)
-			.ok()
-			.and_then(|envelope| envelope.id)
-			.unwrap_or(0);
-
-		let request = match miniserde::json::from_str::<Request>(&line) {
-			Ok(request) => request,
-			Err(err) => {
-				logger::warn(&format!("[helper] invalid request: {err:?}"));
-				write_json_line(
-					&mut stdout,
-					&ErrorResponse {
-						id: request_id,
-						error: format!("invalid request: {err:?}"),
-					},
-				)?;
+			if line.trim().is_empty() {
 				continue;
 			}
+			if tx.send(IncomingMessage::Request(line)).is_err() {
+				break;
+			}
+		}
+	});
+}
+
+fn spawn_pw_mon_thread(tx: mpsc::Sender<IncomingMessage>) {
+	// Thread 2: Run `pw-mon` to detect audio graph changes
+	thread::spawn(move || {
+		let Ok(mut child) = Command::new("pw-mon")
+			.env("LC_ALL", "C")
+			.env("LANG", "C")
+			.stdout(Stdio::piped())
+			.spawn()
+		else {
+			logger::warn("[helper] pw-mon not found or failed to start");
+			let _ = tx.send(IncomingMessage::MonitorDied);
+			return;
 		};
 
-		if !handle_request(&mut stdout, &mut patchbay, request)? {
-			break;
+		if let Some(child_stdout) = child.stdout.take() {
+			let reader = io::BufReader::new(child_stdout);
+			for line in reader.lines() {
+				let Ok(text) = line else { break };
+
+				if text.contains("PipeWire:Interface:Node") || text.contains("PipeWire:Interface:Port") {
+					let _ = tx.send(IncomingMessage::GraphChanged);
+				}
+			}
+		}
+
+		// If we reach here, the process died or stdout closed
+		let _ = child.wait();
+		let _ = tx.send(IncomingMessage::MonitorDied);
+	});
+}
+
+fn main() -> io::Result<()> {
+	let config = parse_args();
+	let mut patchbay = AudioSharePatchbay::new(&config);
+	let mut stdout = io::BufWriter::new(io::stdout().lock());
+
+	let (tx, rx) = mpsc::channel();
+
+	spawn_stdin_thread(tx.clone());
+	spawn_pw_mon_thread(tx);
+
+	// Main Loop: Process messages
+	for msg in rx {
+		match msg {
+			IncomingMessage::Request(line) => {
+				let request_id = miniserde::json::from_str::<RequestEnvelope>(&line)
+					.ok()
+					.and_then(|envelope| envelope.id)
+					.unwrap_or(0);
+
+				let request = match miniserde::json::from_str::<Request>(&line) {
+					Ok(request) => request,
+					Err(err) => {
+						logger::warn(&format!("[helper] invalid request: {err:?}"));
+						write_json_line(
+							&mut stdout,
+							&ErrorResponse {
+								id: request_id,
+								error: format!("invalid request: {err:?}"),
+							},
+						)?;
+						continue;
+					}
+				};
+
+				if !handle_request(&mut stdout, &mut patchbay, request)? {
+					break; // Dispose was called, break loop to cleanly exit
+				}
+			}
+			IncomingMessage::GraphChanged => {
+				write_json_line(&mut stdout, &EventMessage { event: "graphChanged" })?;
+			}
+			IncomingMessage::MonitorDied => {
+				write_json_line(&mut stdout, &EventMessage { event: "monitorDied" })?;
+			}
 		}
 	}
 

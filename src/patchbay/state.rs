@@ -150,39 +150,40 @@ impl PatchbayState {
 
 			ready_info.unwrap()
 		};
-		
+
 		if self.remap_module_id.is_none()
-			&& let Some(mic_name) = &self.virtual_mic_name {
-				let mic_desc = self.virtual_mic_description.as_deref().unwrap_or("Virtual Microphone");
-				logger::info(&format!("[patchbay] creating virtual mic wrapper {mic_name}"));
+			&& let Some(mic_name) = &self.virtual_mic_name
+		{
+			let mic_desc = self.virtual_mic_description.as_deref().unwrap_or("Virtual Microphone");
+			logger::info(&format!("[patchbay] creating virtual mic wrapper {mic_name}"));
 
-				let master_arg = format!("master={}", info.monitor_source);
-				let source_name_arg = format!("source_name={mic_name}");
-				let source_properties_arg = format!(
-					"source_properties=device.description={} node.description={} node.name={}",
-					quote_module_value(mic_desc),
-					quote_module_value(mic_desc),
-					quote_module_value(mic_name),
-				);
+			let master_arg = format!("master={}", info.monitor_source);
+			let source_name_arg = format!("source_name={mic_name}");
+			let source_properties_arg = format!(
+				"source_properties=device.description={} node.description={} node.name={}",
+				quote_module_value(mic_desc),
+				quote_module_value(mic_desc),
+				quote_module_value(mic_name),
+			);
 
-				let module_id_text = run_text(
-					"pactl",
-					&[
-						"load-module",
-						"module-remap-source",
-						master_arg.as_str(),
-						source_name_arg.as_str(),
-						source_properties_arg.as_str(),
-					],
-				)?;
+			let module_id_text = run_text(
+				"pactl",
+				&[
+					"load-module",
+					"module-remap-source",
+					master_arg.as_str(),
+					source_name_arg.as_str(),
+					source_properties_arg.as_str(),
+				],
+			)?;
 
-				let module_id = module_id_text
-					.trim()
-					.parse::<u32>()
-					.map_err(|err| BackendError::InvalidOutput("pactl", format!("failed to parse remap module id: {err}")))?;
+			let module_id = module_id_text
+				.trim()
+				.parse::<u32>()
+				.map_err(|err| BackendError::InvalidOutput("pactl", format!("failed to parse remap module id: {err}")))?;
 
-				self.remap_module_id = Some(module_id);
-			}
+			self.remap_module_id = Some(module_id);
+		}
 
 		Ok(info)
 	}
