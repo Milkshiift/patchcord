@@ -1,6 +1,6 @@
+use miniserde::json::Value;
 use miniserde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use miniserde::json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

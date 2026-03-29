@@ -2,9 +2,10 @@ mod logger;
 mod patchbay;
 
 use std::io::{self, BufRead, Write};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use miniserde::{Deserialize, Serialize};
 use patchbay::{AudioSharePatchbay, PatchbayConfig, has_pipewire};
@@ -66,6 +67,7 @@ enum IncomingMessage {
 	Request(String),
 	GraphChanged,
 	MonitorDied,
+	StdinClosed,
 }
 
 fn write_json_line<T: Serialize>(out: &mut impl Write, value: &T) -> io::Result<()> {
@@ -88,6 +90,8 @@ fn write_result<T: Serialize, E: ToString>(out: &mut impl Write, id: u64, result
 	}
 }
 
+/// Dispatches JSON requests to the Patchbay logic.
+/// Returns Ok(false) if a Dispose request was processed, indicating the loop should exit.
 fn handle_request(out: &mut impl Write, patchbay: &mut AudioSharePatchbay, request: Request) -> io::Result<bool> {
 	match request {
 		Request::HasPipeWire { id } => {
@@ -162,55 +166,59 @@ fn parse_args() -> PatchbayConfig {
 	config
 }
 
+/// Spawns the thread responsible for reading JSON-RPC lines from Node.js via Stdin.
 fn spawn_stdin_thread(tx: mpsc::Sender<IncomingMessage>) {
-	// Thread 1: Read JSON requests from Node.js
 	thread::spawn(move || {
 		let stdin = io::stdin();
 		for line in stdin.lock().lines() {
-			let Ok(line) = line else { break };
-
-			if line.trim().is_empty() {
-				continue;
-			}
-			if tx.send(IncomingMessage::Request(line)).is_err() {
-				break;
+			match line {
+				Ok(text) => {
+					if text.trim().is_empty() {
+						continue;
+					}
+					if tx.send(IncomingMessage::Request(text)).is_err() {
+						return;
+					}
+				}
+				Err(_) => break,
 			}
 		}
+		let _ = tx.send(IncomingMessage::StdinClosed);
 	});
 }
 
-fn spawn_pw_mon_thread(tx: mpsc::Sender<IncomingMessage>) {
+/// Spawns `pw-mon` and a monitoring thread.
+fn spawn_pw_mon_thread(tx: mpsc::Sender<IncomingMessage>) -> Option<Child> {
+	let mut child = Command::new("pw-mon")
+		.env("LC_ALL", "C")
+		.env("LANG", "C")
+		.stdout(Stdio::piped())
+		.stderr(Stdio::null())
+		.spawn()
+		.ok()?;
+
+	let stdout = child.stdout.take()?;
+
 	thread::spawn(move || {
-		let Ok(mut child) = Command::new("pw-mon")
-			.env("LC_ALL", "C")
-			.env("LANG", "C")
-			.stdout(Stdio::piped())
-			.spawn()
-		else {
-			logger::warn("[helper] pw-mon not found or failed to start");
-			let _ = tx.send(IncomingMessage::MonitorDied);
-			return;
-		};
+		let reader = io::BufReader::new(stdout);
+		let mut last_trigger = Instant::now() - Duration::from_secs(1);
 
-		if let Some(child_stdout) = child.stdout.take() {
-			let reader = io::BufReader::new(child_stdout);
-			let mut last_trigger = std::time::Instant::now() - std::time::Duration::from_secs(1);
+		for line in reader.lines() {
+			let Ok(text) = line else { break };
 
-			for line in reader.lines() {
-				let Ok(text) = line else { break };
-
-				if text.contains("PipeWire:Interface:Node") || text.contains("PipeWire:Interface:Port") {
-					if last_trigger.elapsed() > std::time::Duration::from_millis(400) {
-						let _ = tx.send(IncomingMessage::GraphChanged);
-						last_trigger = std::time::Instant::now();
+			if text.contains("PipeWire:Interface:Node") || text.contains("PipeWire:Interface:Port") {
+				if last_trigger.elapsed() > Duration::from_millis(400) {
+					if tx.send(IncomingMessage::GraphChanged).is_err() {
+						return;
 					}
+					last_trigger = Instant::now();
 				}
 			}
 		}
-
-		let _ = child.wait();
 		let _ = tx.send(IncomingMessage::MonitorDied);
 	});
+
+	Some(child)
 }
 
 fn main() -> io::Result<()> {
@@ -221,9 +229,9 @@ fn main() -> io::Result<()> {
 	let (tx, rx) = mpsc::channel();
 
 	spawn_stdin_thread(tx.clone());
-	spawn_pw_mon_thread(tx);
+	let monitor_child = spawn_pw_mon_thread(tx);
 
-	// Main Loop: Process messages
+	// Main loop: Listen for requests from Node.js or events from PipeWire
 	for msg in rx {
 		match msg {
 			IncomingMessage::Request(line) => {
@@ -248,7 +256,7 @@ fn main() -> io::Result<()> {
 				};
 
 				if !handle_request(&mut stdout, &mut patchbay, request)? {
-					break; // Dispose was called, break loop to cleanly exit
+					break;
 				}
 			}
 			IncomingMessage::GraphChanged => {
@@ -257,8 +265,19 @@ fn main() -> io::Result<()> {
 			IncomingMessage::MonitorDied => {
 				write_json_line(&mut stdout, &EventMessage { event: "monitorDied" })?;
 			}
+			IncomingMessage::StdinClosed => {
+				logger::info("[helper] stdin closed, exiting...");
+				break;
+			}
 		}
 	}
+
+	if let Some(mut child) = monitor_child {
+		let _ = child.kill();
+		let _ = child.wait();
+	}
+
+	let _ = patchbay.dispose();
 
 	Ok(())
 }

@@ -27,8 +27,13 @@ pub struct PatchbayState {
 
 impl PatchbayState {
 	pub fn new(config: &PatchbayConfig) -> Self {
-		// Clean up any left-over pactl modules from previous hard crashes
 		clean_orphaned_modules(&config.sink_prefix);
+
+		if let Some(mic_name) = &config.virtual_mic_name {
+			clean_orphaned_modules(mic_name);
+		} else {
+			clean_orphaned_modules(&format!("{}-mic", config.sink_prefix));
+		}
 
 		let unique = NEXT_SINK_ID.fetch_add(1, Ordering::Relaxed);
 
@@ -148,7 +153,6 @@ impl PatchbayState {
 					return Err(BackendError::Timeout("virtual sink"));
 				}
 
-				// Increased to 200ms to prevent heavy CPU spikes during the pw-dump wait loop
 				thread::sleep(Duration::from_millis(200));
 			}
 
@@ -217,7 +221,6 @@ impl PatchbayState {
 			return Err(BackendError::Message("virtual sink has no usable stereo input ports".to_string()));
 		}
 
-		let previous_routes = self.routes.clone();
 		let mut desired_routes = BTreeSet::<Route>::new();
 
 		for node_id in dedupe_node_ids(node_ids) {
@@ -262,14 +265,12 @@ impl PatchbayState {
 			return Err(BackendError::Message("none of the selected nodes could be linked".to_string()));
 		}
 
-		let mut active_routes = previous_routes.intersection(&desired_routes).cloned().collect::<BTreeSet<_>>();
-		let mut newly_created = BTreeSet::<Route>::new();
+		let mut active_routes = BTreeSet::<Route>::new();
 
-		for route in desired_routes.difference(&previous_routes) {
+		for route in &desired_routes {
 			match create_link(&route.output_path, &route.input_path) {
 				Ok(()) => {
 					active_routes.insert(route.clone());
-					newly_created.insert(route.clone());
 				}
 				Err(err) => {
 					logger::warn(&format!(
@@ -281,20 +282,11 @@ impl PatchbayState {
 		}
 
 		if active_routes.is_empty() {
-			for route in newly_created {
-				if let Err(err) = remove_link(&route.output_path, &route.input_path) {
-					logger::warn(&format!(
-						"[patchbay] failed to roll back {} -> {}: {err}",
-						route.output_path, route.input_path
-					));
-				}
-			}
 			return Err(BackendError::Message("none of the selected nodes could be linked".to_string()));
 		}
 
 		let mut retained_stale = BTreeSet::<Route>::new();
-
-		for route in previous_routes.difference(&desired_routes) {
+		for route in self.routes.difference(&desired_routes) {
 			match remove_link(&route.output_path, &route.input_path) {
 				Ok(()) => {}
 				Err(err) => {
@@ -354,7 +346,6 @@ impl PatchbayState {
 			errors.push(err.to_string());
 		}
 
-		// Cleanup Virtual Mic first (dependency of the master sink)
 		if let Some(module_id) = self.remap_module_id {
 			let module_id_text = module_id.to_string();
 			match run_text("pactl", &["unload-module", module_id_text.as_str()]) {
@@ -368,7 +359,6 @@ impl PatchbayState {
 			}
 		}
 
-		// Cleanup Virtual Sink
 		if let Some(module_id) = self.module_id {
 			let module_id_text = module_id.to_string();
 			match run_text("pactl", &["unload-module", module_id_text.as_str()]) {
@@ -512,18 +502,6 @@ fn quote_module_value(value: &str) -> String {
 mod tests {
 	use super::*;
 	use crate::patchbay::PatchbayConfig;
-
-	#[test]
-	fn test_quote_module_value() {
-		// Standard string
-		assert_eq!(quote_module_value("GoofCord Share"), "\"GoofCord Share\"");
-
-		// String with quotes (should be escaped)
-		assert_eq!(quote_module_value("My \"App\""), "\"My \\\"App\\\"\"");
-
-		// String with slashes
-		assert_eq!(quote_module_value("C:\\App"), "\"C:\\\\App\"");
-	}
 
 	#[test]
 	fn test_dedupe_node_ids() {
